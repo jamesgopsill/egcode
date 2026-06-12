@@ -23,17 +23,43 @@ impl<E> From<E> for Error<E> {
     }
 }
 
+/// Encrypts gcode.
 pub struct Encrypt<T: Read, R: RngCore + CryptoRng> {
+    /// A reader of gcode.
     reader: T,
+    /// A cryptographically secure source of randomness.
     rng: R,
 }
 
 impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
+    /// Create a encrypter which requires a reader over the gcode
+    /// and a source of randomness which could come from the
+    /// operating system or microcontroller hardware. `Encrypt`
+    /// implements `embedded_io::Read` so `embedded_io_adaptors::std::FromStd`
+    /// can be used to convert a `std` reader.
+    /// ```rust,ignore
+    /// use embedded_io_adapters::std::FromStd;
+    /// use rand_core::OsRng;
+    /// use egcode::encrypt::Encrypt;
+    ///
+    /// /* code */
+    ///
+    /// let file = std::fs::File::open("<gcode_file>").unwrap();
+    /// let reader = std::io::BufReader::new(file);
+    /// let reader = FromStd::new(reader);
+    /// let e = Encrypt::new(reader, OsRng);
+    /// ```
     pub fn new(reader: T, rng: R) -> Self {
         Self { reader, rng }
     }
 
-    pub fn with_password<W>(mut self, writer: &mut W, pwd: &[u8]) -> Result<(), Error<W::Error>>
+    /// TODO
+    pub fn with_password<W>(
+        mut self,
+        writer: &mut W,
+        pwd: &[u8],
+        rounds: u32,
+    ) -> Result<(), Error<W::Error>>
     where
         W: Write + ErrorType,
     {
@@ -42,13 +68,14 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         self.rng.fill_bytes(&mut salt);
 
         let mut secret = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(pwd, &salt, 10_000, &mut secret);
+        pbkdf2_hmac::<Sha256>(pwd, &salt, rounds, &mut secret);
 
         let mut nonce = [0u8; 12];
         self.rng.fill_bytes(&mut nonce);
 
         writer.write_all(b"EGCO")?;
         writer.write_all(&1u16.to_le_bytes())?;
+        writer.write_all(&rounds.to_le_bytes())?;
         writer.write_all(salt.as_slice())?;
         writer.write_all(nonce.as_slice())?;
         encrypt(&mut self.reader, writer, secret.as_slice(), &nonce)?;
@@ -101,6 +128,7 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         mut self,
         writer: &mut W,
         pwd: &[u8],
+        rounds: u32,
         device_private_key: &[u8],
     ) -> Result<(), Error<W::Error>>
     where
@@ -135,10 +163,11 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         self.rng.fill_bytes(&mut pwd_nonce);
 
         let mut pwd_secret = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, 10_000, &mut pwd_secret);
+        pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, rounds, &mut pwd_secret);
 
         writer.write_all(b"EGCO")?;
         writer.write_all(&Method::WithPasswordAndDeviceKey.as_bytes())?;
+        writer.write_all(&rounds.to_le_bytes())?;
         writer.write_all(&pwd_salt)?;
         writer.write_all(&pwd_nonce)?;
         writer.write_all(&gcode_salt)?;
@@ -203,7 +232,7 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        let r = e.with_password(&mut writer, pwd.as_bytes());
+        let r = e.with_password(&mut writer, pwd.as_bytes(), 10_000);
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
         assert!(r.is_ok())
     }
@@ -231,7 +260,12 @@ mod tests {
         OsRng.fill_bytes(&mut device_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        let r = e.with_password_and_device_key(&mut writer, pwd.as_bytes(), device_key.as_slice());
+        let r = e.with_password_and_device_key(
+            &mut writer,
+            pwd.as_bytes(),
+            10_000,
+            device_key.as_slice(),
+        );
         assert!(r.is_ok())
     }
 }

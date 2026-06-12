@@ -1,9 +1,7 @@
 use egcode::decrypt::Decrypt;
-use leptos::{
-    prelude::*, reactive::spawn_local,
-};
+use leptos::{prelude::*, reactive::spawn_local};
 use web_sys::{
-    Event, HtmlInputElement, MouseEvent, 
+    Event, HtmlInputElement, MouseEvent,
     js_sys::{self, futures::JsFuture},
     wasm_bindgen::JsCast,
 };
@@ -17,9 +15,8 @@ pub fn Decrypt(
     device_public_key: RwSignal<PublicKey>,
 ) -> impl IntoView {
     // Should only need to be tracked on mount.
-    let device_public_key_hex = RwSignal::<String>::new(hex::encode(
-        device_public_key.get_untracked(),
-    ));
+    let device_public_key_hex =
+        RwSignal::<String>::new(hex::encode(device_public_key.get_untracked()));
     // let port = RwSignal::<Option<SerialPort>>::default();
     // let connected = move || port.get().is_some();
     let err_msg = RwSignal::<Option<&str>>::default();
@@ -128,35 +125,40 @@ pub fn Decrypt(
     };
 
     let decrypt_and_download = move |_: MouseEvent| {
-
         let enc = encrypted_gcode.get_untracked();
         let mut decryptor = Decrypt::new(enc.as_slice());
         match selected.get().as_str() {
             "1" => {
                 let pwd = password.get_untracked();
                 if decryptor.with_password(pwd.as_bytes()).is_err() {
-                    err_msg.set(Some("Decryption error."));  
+                    err_msg.set(Some("Decryption error."));
                 };
-            },
+            }
             "2" => {
                 let key = device_private_key.get_untracked();
                 if decryptor.with_device_key(*key.as_bytes()).is_err() {
-                    err_msg.set(Some("Decryption error."));  
+                    err_msg.set(Some("Decryption error."));
                 }
-            },
+            }
             "3" => {
                 let pwd = password.get_untracked();
                 let key = device_private_key.get_untracked();
-                if decryptor.with_password_and_device_key(pwd.as_bytes(), *key.as_bytes()).is_err() {
-                    err_msg.set(Some("Decryption error."));  
+                if decryptor
+                    .with_password_and_device_key(
+                        pwd.as_bytes(),
+                        *key.as_bytes(),
+                    )
+                    .is_err()
+                {
+                    err_msg.set(Some("Decryption error."));
                 }
-            },
+            }
             _ => {}
         }
 
         let mut line: Vec<u8> = Vec::new();
         let mut gcode: Vec<u8> = Vec::new();
-        
+
         loop {
             match decryptor.next(&mut line) {
                 Ok(Some(n)) => {
@@ -177,9 +179,7 @@ pub fn Decrypt(
         let fname = fname.get_untracked();
 
         match download_gcode(gcode, fname.as_str()) {
-            Ok(()) => {
-                suc_msg.set(Some("Horray! You've decrypted some gcode."))
-            },
+            Ok(()) => suc_msg.set(Some("Horray! You've decrypted some gcode.")),
             Err(e) => {
                 err_msg.set(Some(e));
             }
@@ -252,24 +252,23 @@ pub fn Decrypt(
     }
 }
 
-
-            /*
-            <div class="col-6">
-                <div class="card">
-                    <div class="card-header">{"Connect a Device (3D Printer via USB)"}</div>
-                    <div class="card-body">
-                        <Show when=move || !connected()>
-                            <button class="btn btn-outline-primary" on:click=connect>
-                                {"Connect"}
-                            </button>
-                        </Show>
-                        <Show when=connected>
-                            <button class="btn btn-outline-danger">{"Disconnect"}</button>
-                        </Show>
-                    </div>
-                </div>
-            </div>
-                <button class="btn btn-outline-primary" disabled=move || !connected()>
-                    {"Decrypt and Print"}
+/*
+<div class="col-6">
+    <div class="card">
+        <div class="card-header">{"Connect a Device (3D Printer via USB)"}</div>
+        <div class="card-body">
+            <Show when=move || !connected()>
+                <button class="btn btn-outline-primary" on:click=connect>
+                    {"Connect"}
                 </button>
-            */
+            </Show>
+            <Show when=connected>
+                <button class="btn btn-outline-danger">{"Disconnect"}</button>
+            </Show>
+        </div>
+    </div>
+</div>
+    <button class="btn btn-outline-primary" disabled=move || !connected()>
+        {"Decrypt and Print"}
+    </button>
+*/

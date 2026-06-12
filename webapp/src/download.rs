@@ -1,7 +1,6 @@
 use web_sys::{
-    js_sys,
+    HtmlAnchorElement, js_sys,
     wasm_bindgen::{JsCast, JsValue},
-    HtmlAnchorElement,
 };
 
 pub fn download_gcode(

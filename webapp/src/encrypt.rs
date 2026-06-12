@@ -1,12 +1,11 @@
 use egcode::encrypt::Encrypt;
 use leptos::{prelude::*, reactive::spawn_local};
 use rand_core::OsRng;
-use web_sys::{
-    Event, HtmlInputElement, MouseEvent,
-    js_sys::{futures::JsFuture},
-};
+use web_sys::{Event, HtmlInputElement, MouseEvent, js_sys::futures::JsFuture};
 
 use crate::download::download_gcode;
+
+const ROUNDS: u32 = 100_000;
 
 #[component]
 pub fn Encrypt() -> impl IntoView {
@@ -44,6 +43,7 @@ pub fn Encrypt() -> impl IntoView {
     let encrypt = move |_e: MouseEvent| {
         let selected = selected.get_untracked();
         let gcode = gcode.get_untracked();
+        let encryptor = Encrypt::new(gcode.as_bytes(), OsRng);
         let mut writer: Vec<u8> = Vec::new();
         match selected.as_str() {
             "1" => {
@@ -53,9 +53,8 @@ pub fn Encrypt() -> impl IntoView {
                     err_msg.set(Some("Passwords do not match."));
                     return;
                 }
-                let encryptor = Encrypt::new(gcode.as_bytes(), OsRng);
                 if encryptor
-                    .with_password(&mut writer, password.as_bytes())
+                    .with_password(&mut writer, password.as_bytes(), ROUNDS)
                     .is_err()
                 {
                     err_msg.set(Some("Encryption error."));
@@ -69,7 +68,6 @@ pub fn Encrypt() -> impl IntoView {
                     err_msg.set(Some("Machine public key decode error."));
                     return;
                 };
-                let encryptor = Encrypt::new(gcode.as_bytes(), OsRng);
                 if encryptor
                     .with_device_key(&mut writer, &machine_public_key)
                     .is_err()
@@ -91,11 +89,11 @@ pub fn Encrypt() -> impl IntoView {
                     err_msg.set(Some("Machine public key decode error."));
                     return;
                 };
-                let encryptor = Encrypt::new(gcode.as_bytes(), OsRng);
                 if encryptor
                     .with_password_and_device_key(
                         &mut writer,
                         password.as_bytes(),
+                        ROUNDS,
                         &machine_public_key,
                     )
                     .is_err()
@@ -109,13 +107,12 @@ pub fn Encrypt() -> impl IntoView {
                 return;
             }
         }
-
         let fname = fname.get();
 
         match download_gcode(writer, fname.as_str()) {
             Ok(()) => {
                 suc_msg.set(Some("Horray! You've protected your gcode and intellectual property!"));
-            },
+            }
             Err(e) => {
                 err_msg.set(Some(e));
             }
@@ -188,8 +185,8 @@ pub fn Encrypt() -> impl IntoView {
                                 <label for="floatingSelect">{"Confirm Password"}</label>
                             </div>
                         </Show>
-                        <button class="btn btn-primary mt-2" on:click=encrypt>
-                            Encrypt
+                        <button class="btn btn-outline-primary mt-2" on:click=encrypt>
+                            {" Encrypt"}
                         </button>
                     </div>
                 </div>

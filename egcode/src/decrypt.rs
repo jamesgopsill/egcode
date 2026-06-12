@@ -42,16 +42,19 @@ impl<T: Read> Decrypt<T> {
 
     pub fn with_password(&mut self, pwd: &[u8]) -> Result<(), Error> {
         self.read_magic()?;
-        let method = self.read_method()?;
+        let Ok(method) = Method::try_from_reader(&mut self.reader) else {
+            return Err(Error::InvalidMethod);
+        };
         if method != Method::WithPassword {
             return Err(Error::InvalidMethod);
         }
+        let rounds = self.read_rounds()?;
         let salt = self.read_salt()?;
         let nonce = self.read_nonce()?;
         self.nonce = Some(nonce);
 
         let mut secret = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(pwd, &salt, 10_000, &mut secret);
+        pbkdf2_hmac::<Sha256>(pwd, &salt, rounds, &mut secret);
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(&secret) else {
             return Err(Error::CipherCreationFailed);
@@ -63,7 +66,9 @@ impl<T: Read> Decrypt<T> {
 
     pub fn with_device_key(&mut self, device_private_key: [u8; 32]) -> Result<(), Error> {
         self.read_magic()?;
-        let method = self.read_method()?;
+        let Ok(method) = Method::try_from_reader(&mut self.reader) else {
+            return Err(Error::InvalidMethod);
+        };
         if method != Method::WithDeviceKey {
             return Err(Error::InvalidMethod);
         }
@@ -100,11 +105,14 @@ impl<T: Read> Decrypt<T> {
         device_private_key: [u8; 32],
     ) -> Result<(), Error> {
         self.read_magic()?;
-        let method = self.read_method()?;
+        let Ok(method) = Method::try_from_reader(&mut self.reader) else {
+            return Err(Error::InvalidMethod);
+        };
         if method != Method::WithPasswordAndDeviceKey {
             return Err(Error::InvalidMethod);
         }
 
+        let rounds = self.read_rounds()?;
         let pwd_salt = self.read_salt()?;
         let pwd_nonce = self.read_nonce()?;
         let gcode_salt = self.read_salt()?;
@@ -115,7 +123,7 @@ impl<T: Read> Decrypt<T> {
         // decode the ephemeral_public_key
 
         let mut pwd_secret = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, 10_000, &mut pwd_secret);
+        pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, rounds, &mut pwd_secret);
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(pwd_secret.as_slice()) else {
             return Err(Error::CipherCreationFailed);
@@ -156,6 +164,14 @@ impl<T: Read> Decrypt<T> {
         Ok(())
     }
 
+    fn read_rounds(&mut self) -> Result<u32, Error> {
+        let mut bytes = [0u8; 4];
+        self.reader
+            .read_exact(&mut bytes)
+            .map_err(|_| Error::ReadError)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
     fn read_salt(&mut self) -> Result<[u8; 16], Error> {
         let mut salt = [0u8; 16];
         self.reader
@@ -182,18 +198,6 @@ impl<T: Read> Decrypt<T> {
             return Err(Error::InvalidMagic);
         }
         Ok(())
-    }
-
-    fn read_method(&mut self) -> Result<Method, Error> {
-        let mut method: [u8; 2] = [0u8; 2];
-        self.reader
-            .read_exact(&mut method)
-            .map_err(|_| Error::ReadError)?;
-        let method = u16::from_le_bytes(method);
-        match Method::try_from(method) {
-            Ok(m) => Ok(m),
-            Err(_) => Err(Error::InvalidMethod),
-        }
     }
 
     pub fn next(&mut self, writer: &mut impl Write) -> Result<Option<usize>, Error> {
@@ -275,7 +279,8 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        e.with_password(&mut writer, pwd.as_bytes()).unwrap();
+        e.with_password(&mut writer, pwd.as_bytes(), 10_000)
+            .unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
         let reader = FromStd::new(writer.as_slice());
@@ -352,8 +357,13 @@ mod tests {
         let device_public_key = PublicKey::from(&device_private_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        e.with_password_and_device_key(&mut writer, pwd.as_bytes(), device_public_key.as_bytes())
-            .unwrap();
+        e.with_password_and_device_key(
+            &mut writer,
+            pwd.as_bytes(),
+            10_000,
+            device_public_key.as_bytes(),
+        )
+        .unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
         let reader = FromStd::new(writer.as_slice());
         let mut d = Decrypt::new(reader);
