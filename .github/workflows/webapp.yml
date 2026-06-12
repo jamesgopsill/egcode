@@ -1,0 +1,39 @@
+name: Publish Website
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: cargo-bins/cargo-binstall@main
+      - name: "Install trunk"
+        run: cargo binstall trunk
+        working-directory: ./webapp
+      - name: "Build and Deploy"
+        run: trunk build --release
+        working-directory: ./webapp
+      - name: "Copy 404.html"
+        run: cp 404.html ./dist/
+        working-directory: ./webapp
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: webapp/dist/
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      pages: write # to deploy to Pages
+      id-token: write # to verify the deployment originates from an appropriate source
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,237 @@
+use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce};
+use embedded_io::{ErrorType, Read, Write};
+use hkdf::Hkdf;
+use pbkdf2::pbkdf2_hmac;
+use rand_core::{CryptoRng, RngCore};
+use sha2::Sha256;
+use x25519_dalek::{EphemeralSecret, PublicKey};
+
+use crate::{BLOCK_SIZE, Method};
+
+#[derive(Debug)]
+pub enum Error<E> {
+    UnprocessablePublicKey,
+    CipherCreationFailed,
+    BlockError,
+    KeyError,
+    WriteError(E),
+}
+
+impl<E> From<E> for Error<E> {
+    fn from(error: E) -> Self {
+        Self::WriteError(error)
+    }
+}
+
+pub struct Encrypt<T: Read, R: RngCore + CryptoRng> {
+    reader: T,
+    rng: R,
+}
+
+impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
+    pub fn new(reader: T, rng: R) -> Self {
+        Self { reader, rng }
+    }
+
+    pub fn with_password<W>(mut self, writer: &mut W, pwd: &[u8]) -> Result<(), Error<W::Error>>
+    where
+        W: Write + ErrorType,
+    {
+        // Generate a secret from a password
+        let mut salt = [0u8; 16];
+        self.rng.fill_bytes(&mut salt);
+
+        let mut secret = [0u8; 32];
+        pbkdf2_hmac::<Sha256>(pwd, &salt, 10_000, &mut secret);
+
+        let mut nonce = [0u8; 12];
+        self.rng.fill_bytes(&mut nonce);
+
+        writer.write_all(b"EGCO")?;
+        writer.write_all(&1u16.to_le_bytes())?;
+        writer.write_all(salt.as_slice())?;
+        writer.write_all(nonce.as_slice())?;
+        encrypt(&mut self.reader, writer, secret.as_slice(), &nonce)?;
+        Ok(())
+    }
+
+    pub fn with_device_key<W>(
+        mut self,
+        writer: &mut W,
+        device_private_key: &[u8],
+    ) -> Result<(), Error<W::Error>>
+    where
+        W: Write + ErrorType,
+    {
+        let Ok(bob): Result<[u8; 32], _> = device_private_key.try_into() else {
+            return Err(Error::UnprocessablePublicKey);
+        };
+        let bob = PublicKey::from(bob);
+
+        let ephemeral_private_key = EphemeralSecret::random_from_rng(&mut self.rng);
+        let ephemeral_public_key = PublicKey::from(&ephemeral_private_key);
+
+        let shared_secret = ephemeral_private_key.diffie_hellman(&bob);
+
+        // A shared secret is unsuitable for chacha20 so we derive a new
+        // secret based on it using HKDF
+        let mut salt = [0u8; 16];
+        self.rng.fill_bytes(&mut salt);
+        let hk = Hkdf::<Sha256>::new(Some(&salt), shared_secret.as_bytes());
+
+        let mut okm = [0u8; 32];
+        if hk.expand(b"egcode", &mut okm).is_err() {
+            return Err(Error::KeyError);
+        }
+
+        let mut nonce = [0u8; 12];
+        self.rng.fill_bytes(&mut nonce);
+
+        writer.write_all(b"EGCO")?;
+        writer.write_all(&Method::WithDeviceKey.as_bytes())?;
+        writer.write_all(&salt)?;
+        writer.write_all(&nonce)?;
+        writer.write_all(ephemeral_public_key.as_bytes())?;
+        encrypt(&mut self.reader, writer, &okm, &nonce)?;
+
+        Ok(())
+    }
+
+    pub fn with_password_and_device_key<W>(
+        mut self,
+        writer: &mut W,
+        pwd: &[u8],
+        device_private_key: &[u8],
+    ) -> Result<(), Error<W::Error>>
+    where
+        W: Write + ErrorType,
+    {
+        let Ok(bob): Result<[u8; 32], _> = device_private_key.try_into() else {
+            return Err(Error::UnprocessablePublicKey);
+        };
+        let bob = PublicKey::from(bob);
+
+        let ephemeral_private_key = EphemeralSecret::random_from_rng(&mut self.rng);
+        let ephemeral_public_key = PublicKey::from(&ephemeral_private_key);
+
+        let shared_secret = ephemeral_private_key.diffie_hellman(&bob);
+
+        let mut gcode_salt = [0u8; 16];
+        self.rng.fill_bytes(&mut gcode_salt);
+        let hk = Hkdf::<Sha256>::new(Some(&gcode_salt), shared_secret.as_bytes());
+
+        let mut gcode_secret = [0u8; 32];
+        if hk.expand(b"egcode", &mut gcode_secret).is_err() {
+            return Err(Error::KeyError);
+        }
+
+        let mut gcode_nonce = [0u8; 12];
+        self.rng.fill_bytes(&mut gcode_nonce);
+
+        // Generate a secret from a password
+        let mut pwd_salt = [0u8; 16];
+        self.rng.fill_bytes(&mut pwd_salt);
+        let mut pwd_nonce = [0u8; 12];
+        self.rng.fill_bytes(&mut pwd_nonce);
+
+        let mut pwd_secret = [0u8; 32];
+        pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, 10_000, &mut pwd_secret);
+
+        writer.write_all(b"EGCO")?;
+        writer.write_all(&Method::WithPasswordAndDeviceKey.as_bytes())?;
+        writer.write_all(&pwd_salt)?;
+        writer.write_all(&pwd_nonce)?;
+        writer.write_all(&gcode_salt)?;
+        writer.write_all(&gcode_nonce)?;
+        encrypt(
+            &mut ephemeral_public_key.as_bytes().as_slice(),
+            writer,
+            &pwd_secret,
+            &pwd_nonce,
+        )?;
+        encrypt(&mut self.reader, writer, &gcode_secret, &gcode_nonce)?;
+
+        Ok(())
+    }
+}
+
+fn encrypt<W>(
+    reader: &mut impl Read,
+    writer: &mut W,
+    secret: &[u8],
+    nonce: &[u8],
+) -> Result<(), Error<W::Error>>
+where
+    W: Write + ErrorType,
+{
+    let nonce = Nonce::from_slice(nonce);
+    let Ok(cipher) = ChaCha20Poly1305::new_from_slice(secret) else {
+        return Err(Error::CipherCreationFailed);
+    };
+
+    let mut block: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
+
+    while let Ok(n) = reader.read(&mut block) {
+        if n == 0 {
+            // EOF
+            break;
+        }
+        let Ok(tag) = cipher.encrypt_in_place_detached(nonce, &[], &mut block[..n]) else {
+            return Err(Error::BlockError);
+        };
+        writer.write_all(&tag)?;
+        writer.write_all(&block[..n])?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use embedded_io_adapters::std::FromStd;
+    use rand_core::OsRng;
+
+    use super::*;
+
+    extern crate std;
+
+    #[test]
+    fn test_encrypt_with_password() {
+        let file = std::fs::File::open("test_data/box.gcode").unwrap();
+        let reader = std::io::BufReader::new(file);
+        let reader = FromStd::new(reader);
+        let pwd = "test";
+        let mut writer = std::vec::Vec::new();
+        let e = Encrypt::new(reader, OsRng);
+        let r = e.with_password(&mut writer, pwd.as_bytes());
+        std::println!("Encrypted Gcode Length: {:?}", writer.len());
+        assert!(r.is_ok())
+    }
+
+    #[test]
+    fn test_encrypt_with_device_key() {
+        let file = std::fs::File::open("test_data/box.gcode").unwrap();
+        let reader = std::io::BufReader::new(file);
+        let reader = FromStd::new(reader);
+        let mut writer = std::vec::Vec::new();
+        let mut device_key = [0u8; 32];
+        OsRng.fill_bytes(&mut device_key);
+        let e = Encrypt::new(reader, OsRng);
+        let r = e.with_device_key(&mut writer, device_key.as_slice());
+        assert!(r.is_ok())
+    }
+
+    #[test]
+    fn test_encrypt_with_password_and_device_key() {
+        let file = std::fs::File::open("test_data/box.gcode").unwrap();
+        let reader = std::io::BufReader::new(file);
+        let reader = FromStd::new(reader);
+        let mut writer = std::vec::Vec::new();
+        let mut device_key = [0u8; 32];
+        OsRng.fill_bytes(&mut device_key);
+        let pwd = "test";
+        let e = Encrypt::new(reader, OsRng);
+        let r = e.with_password_and_device_key(&mut writer, pwd.as_bytes(), device_key.as_slice());
+        assert!(r.is_ok())
+    }
+}
