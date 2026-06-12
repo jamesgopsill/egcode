@@ -31,7 +31,7 @@ fn App() -> impl IntoView {
     let device_private_key = RwSignal::<StaticSecret>::new(device_private_key);
     let device_public_key = RwSignal::<PublicKey>::new(device_public_key);
     view! {
-        <Router>
+        <Router base="/egcode">
             <Routes fallback=NotFound>
                 <ParentRoute path=path!("/") view=MainLayout>
                     <Route path=path!("") view=Index />

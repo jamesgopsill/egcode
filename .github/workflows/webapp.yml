@@ -17,9 +17,6 @@ jobs:
       - name: "Build and Deploy"
         run: trunk build --release
         working-directory: ./webapp
-      - name: "Copy 404.html"
-        run: cp 404.html ./dist/
-        working-directory: ./webapp
       - uses: actions/upload-pages-artifact@v3
         with:
           path: webapp/dist/
