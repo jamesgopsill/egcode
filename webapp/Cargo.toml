@@ -25,6 +25,7 @@ web-sys = {
   ]
 }
 futures = "0.3"
+gloo-timers = { version="0.4", features = ["futures"] }
 # Encryption deps
 hex = "0.4"
 # Public Private Kay Pairs and Shared Key Derivation

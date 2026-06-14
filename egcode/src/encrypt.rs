@@ -1,12 +1,12 @@
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce};
 use embedded_io::{ErrorType, Read, Write};
+use futures::executor::block_on;
 use hkdf::Hkdf;
-use pbkdf2::pbkdf2_hmac;
 use rand_core::{CryptoRng, RngCore};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-use crate::{BLOCK_SIZE, Method};
+use crate::{BLOCK_SIZE, Method, pbkdf2::AsyncPbkdf2};
 
 #[derive(Debug)]
 pub enum Error<E> {
@@ -54,7 +54,7 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
     }
 
     /// TODO
-    pub fn with_password<W>(
+    pub async fn with_password<W>(
         mut self,
         writer: &mut W,
         pwd: &[u8],
@@ -67,8 +67,10 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         let mut salt = [0u8; 16];
         self.rng.fill_bytes(&mut salt);
 
-        let mut secret = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(pwd, &salt, rounds, &mut secret);
+        // let mut secret = [0u8; 32];
+        // pbkdf2_hmac::<Sha256>(pwd, &salt, rounds, &mut secret);
+        let hasher = AsyncPbkdf2::new(pwd, salt.as_slice());
+        let secret = hasher.generate(rounds).await;
 
         let mut nonce = [0u8; 12];
         self.rng.fill_bytes(&mut nonce);
@@ -80,6 +82,19 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         writer.write_all(nonce.as_slice())?;
         encrypt(&mut self.reader, writer, secret.as_slice(), &nonce)?;
         Ok(())
+    }
+
+    pub fn block_on_with_password<W>(
+        self,
+        writer: &mut W,
+        pwd: &[u8],
+        rounds: u32,
+    ) -> Result<(), Error<W::Error>>
+    where
+        W: Write + ErrorType,
+    {
+        let fut = self.with_password(writer, pwd, rounds);
+        block_on(fut)
     }
 
     pub fn with_device_key<W>(
@@ -124,7 +139,7 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         Ok(())
     }
 
-    pub fn with_password_and_device_key<W>(
+    pub async fn with_password_and_device_key<W>(
         mut self,
         writer: &mut W,
         pwd: &[u8],
@@ -162,8 +177,10 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         let mut pwd_nonce = [0u8; 12];
         self.rng.fill_bytes(&mut pwd_nonce);
 
-        let mut pwd_secret = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, rounds, &mut pwd_secret);
+        //let mut pwd_secret = [0u8; 32];
+        //pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, rounds, &mut pwd_secret);
+        let hasher = AsyncPbkdf2::new(pwd, pwd_salt.as_slice());
+        let pwd_secret = hasher.generate(rounds).await;
 
         writer.write_all(b"EGCO")?;
         writer.write_all(&Method::WithPasswordAndDeviceKey.as_bytes())?;
@@ -181,6 +198,20 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         encrypt(&mut self.reader, writer, &gcode_secret, &gcode_nonce)?;
 
         Ok(())
+    }
+
+    pub fn block_on_with_password_and_device_key<W>(
+        self,
+        writer: &mut W,
+        pwd: &[u8],
+        rounds: u32,
+        device_private_key: &[u8],
+    ) -> Result<(), Error<W::Error>>
+    where
+        W: Write + ErrorType,
+    {
+        let fut = self.with_password_and_device_key(writer, pwd, rounds, device_private_key);
+        block_on(fut)
     }
 }
 
@@ -232,7 +263,7 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        let r = e.with_password(&mut writer, pwd.as_bytes(), 10_000);
+        let r = e.block_on_with_password(&mut writer, pwd.as_bytes(), 10_000);
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
         assert!(r.is_ok())
     }
@@ -260,7 +291,7 @@ mod tests {
         OsRng.fill_bytes(&mut device_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        let r = e.with_password_and_device_key(
+        let r = e.block_on_with_password_and_device_key(
             &mut writer,
             pwd.as_bytes(),
             10_000,

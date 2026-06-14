@@ -1,11 +1,17 @@
+use std::{
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
+
 use egcode::encrypt::Encrypt;
+use gloo_timers::future::TimeoutFuture;
 use leptos::{prelude::*, reactive::spawn_local};
 use rand_core::OsRng;
 use web_sys::{Event, HtmlInputElement, MouseEvent, js_sys::futures::JsFuture};
 
 use crate::download::download_gcode;
 
-const ROUNDS: u32 = 100_000;
+const ROUNDS: u32 = 600_000;
 
 #[component]
 pub fn Encrypt() -> impl IntoView {
@@ -17,6 +23,7 @@ pub fn Encrypt() -> impl IntoView {
     let confirm_password = RwSignal::<String>::default();
     let selected = RwSignal::<String>::new("3".to_string());
     let fname = RwSignal::<String>::default();
+    let spinner = RwSignal::<bool>::new(false);
 
     let read_gcode = move |e: Event| {
         let target = event_target::<HtmlInputElement>(&e);
@@ -41,82 +48,139 @@ pub fn Encrypt() -> impl IntoView {
     };
 
     let encrypt = move |_e: MouseEvent| {
-        let selected = selected.get_untracked();
-        let gcode = gcode.get_untracked();
-        let encryptor = Encrypt::new(gcode.as_bytes(), OsRng);
-        let mut writer: Vec<u8> = Vec::new();
-        match selected.as_str() {
-            "1" => {
-                let password = password.get_untracked();
-                let confirm_password = confirm_password.get_untracked();
-                if password != confirm_password {
-                    err_msg.set(Some("Passwords do not match."));
-                    return;
+        spawn_local(async move {
+            spinner.set(true);
+            let selected = selected.get_untracked();
+            let gcode = gcode.get_untracked();
+            let encryptor = Encrypt::new(gcode.as_bytes(), OsRng);
+            let mut writer: Vec<u8> = Vec::new();
+
+            match selected.as_str() {
+                "1" => {
+                    let password = password.get_untracked();
+                    let confirm_password = confirm_password.get_untracked();
+                    if password != confirm_password {
+                        err_msg.set(Some("Passwords do not match."));
+                        return;
+                    }
+                    let fut = encryptor.with_password(
+                        &mut writer,
+                        password.as_bytes(),
+                        ROUNDS,
+                    );
+                    let mut pinned_fut = pin!(fut);
+                    let waker = Waker::noop();
+                    let mut cx = Context::from_waker(waker);
+                    const MAX_ITER: u32 = 10_000;
+                    let mut iter: u32 = 0;
+                    loop {
+                        match pinned_fut.as_mut().poll(&mut cx) {
+                            Poll::Pending => {
+                                iter += 1;
+                                // Pause after so many iterations to enable the
+                                // UI to stay responsive.
+                                if iter >= MAX_ITER {
+                                    TimeoutFuture::new(1).await;
+                                    iter = 0;
+                                }
+                            }
+                            Poll::Ready(result) => {
+                                if result.is_err() {
+                                    spinner.set(false);
+                                    err_msg.set(Some("Encryption Error."));
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
-                if encryptor
-                    .with_password(&mut writer, password.as_bytes(), ROUNDS)
-                    .is_err()
-                {
-                    err_msg.set(Some("Encryption error."));
-                    return;
+                "2" => {
+                    let machine_public_key = device_public_key.get_untracked();
+                    let Ok(machine_public_key) =
+                        hex::decode(machine_public_key)
+                    else {
+                        spinner.set(false);
+                        err_msg.set(Some("Machine public key decode error."));
+                        return;
+                    };
+                    if encryptor
+                        .with_device_key(&mut writer, &machine_public_key)
+                        .is_err()
+                    {
+                        spinner.set(false);
+                        err_msg.set(Some("Encryption Error."));
+                        return;
+                    }
                 }
-            }
-            "2" => {
-                let machine_public_key = device_public_key.get_untracked();
-                let Ok(machine_public_key) = hex::decode(machine_public_key)
-                else {
-                    err_msg.set(Some("Machine public key decode error."));
-                    return;
-                };
-                if encryptor
-                    .with_device_key(&mut writer, &machine_public_key)
-                    .is_err()
-                {
-                    err_msg.set(Some("Encryption error."));
-                    return;
-                }
-            }
-            "3" => {
-                let password = password.get_untracked();
-                let confirm_password = confirm_password.get_untracked();
-                if password != confirm_password {
-                    err_msg.set(Some("Passwords do not match."));
-                    return;
-                }
-                let machine_public_key = device_public_key.get_untracked();
-                let Ok(machine_public_key) = hex::decode(machine_public_key)
-                else {
-                    err_msg.set(Some("Machine public key decode error."));
-                    return;
-                };
-                if encryptor
-                    .with_password_and_device_key(
+                "3" => {
+                    let password = password.get_untracked();
+                    let confirm_password = confirm_password.get_untracked();
+                    if password != confirm_password {
+                        err_msg.set(Some("Passwords do not match."));
+                        return;
+                    }
+                    let machine_public_key = device_public_key.get_untracked();
+                    let Ok(machine_public_key) =
+                        hex::decode(machine_public_key)
+                    else {
+                        spinner.set(false);
+                        err_msg.set(Some("Machine public key decode error."));
+                        return;
+                    };
+                    let fut = encryptor.with_password_and_device_key(
                         &mut writer,
                         password.as_bytes(),
                         ROUNDS,
                         &machine_public_key,
-                    )
-                    .is_err()
-                {
-                    err_msg.set(Some("Encryption error."));
+                    );
+                    let mut pinned_fut = pin!(fut);
+                    let waker = Waker::noop();
+                    let mut cx = Context::from_waker(waker);
+                    const MAX_ITER: u32 = 10_000;
+                    let mut iter: u32 = 0;
+                    loop {
+                        match pinned_fut.as_mut().poll(&mut cx) {
+                            Poll::Pending => {
+                                iter += 1;
+                                // Pause after so many iterations to enable the
+                                // UI to stay responsive.
+                                if iter >= MAX_ITER {
+                                    TimeoutFuture::new(1).await;
+                                    iter = 0;
+                                }
+                            }
+                            Poll::Ready(result) => {
+                                if result.is_err() {
+                                    spinner.set(false);
+                                    err_msg.set(Some("Encryption Error"));
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    err_msg.set(Some("Unknown encryption method."));
                     return;
                 }
-            }
-            _ => {
-                err_msg.set(Some("Unknown encryption method."));
-                return;
-            }
-        }
-        let fname = fname.get();
+            };
 
-        match download_gcode(writer, fname.as_str()) {
-            Ok(()) => {
-                suc_msg.set(Some("Horray! You've protected your gcode and intellectual property!"));
+            // Handle the fut
+
+            let fname = fname.get_untracked();
+            spinner.set(false);
+
+            match download_gcode(writer, fname.as_str()) {
+                Ok(()) => {
+                    suc_msg.set(Some("Horray! You've protected your gcode and intellectual property!"));
+                }
+                Err(e) => {
+                    err_msg.set(Some(e));
+                }
             }
-            Err(e) => {
-                err_msg.set(Some(e));
-            }
-        }
+        });
     };
 
     view! {
@@ -185,7 +249,16 @@ pub fn Encrypt() -> impl IntoView {
                                 <label for="floatingSelect">{"Confirm Password"}</label>
                             </div>
                         </Show>
-                        <button class="btn btn-outline-primary mt-2" on:click=encrypt>
+                        <button
+                            class="btn btn-outline-primary mt-2"
+                            on:click=encrypt
+                            disabled=spinner
+                        >
+                            <Show when=move || spinner.get()>
+                                <div class="spinner-border spinner-border-sm" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </Show>
                             {" Encrypt"}
                         </button>
                     </div>

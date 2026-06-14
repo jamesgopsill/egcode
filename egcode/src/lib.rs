@@ -8,6 +8,8 @@ pub mod decrypt;
 /// Encryption methods.
 pub mod encrypt;
 
+pub(crate) mod pbkdf2;
+
 // The default block size used by chacha20poly1305.
 const BLOCK_SIZE: usize = 1024;
 

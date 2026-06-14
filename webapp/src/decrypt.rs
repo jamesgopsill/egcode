@@ -1,4 +1,10 @@
+use std::{
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
+
 use egcode::decrypt::Decrypt;
+use gloo_timers::future::TimeoutFuture;
 use leptos::{prelude::*, reactive::spawn_local};
 use web_sys::{
     Event, HtmlInputElement, MouseEvent,
@@ -8,6 +14,8 @@ use web_sys::{
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::download::download_gcode;
+
+const MAX_ITER: u32 = 10_000;
 
 #[component]
 pub fn Decrypt(
@@ -26,6 +34,7 @@ pub fn Decrypt(
     let password = RwSignal::<String>::default();
     let selected = RwSignal::<String>::new("3".to_string());
     let fname = RwSignal::<String>::default();
+    let spinner = RwSignal::<bool>::new(false);
 
     /*
     let connect = move |_: MouseEvent| {
@@ -125,65 +134,115 @@ pub fn Decrypt(
     };
 
     let decrypt_and_download = move |_: MouseEvent| {
-        let enc = encrypted_gcode.get_untracked();
-        let mut decryptor = Decrypt::new(enc.as_slice());
-        match selected.get().as_str() {
-            "1" => {
-                let pwd = password.get_untracked();
-                if decryptor.with_password(pwd.as_bytes()).is_err() {
-                    err_msg.set(Some("Decryption error."));
-                };
-            }
-            "2" => {
-                let key = device_private_key.get_untracked();
-                if decryptor.with_device_key(*key.as_bytes()).is_err() {
-                    err_msg.set(Some("Decryption error."));
+        spinner.set(true);
+        spawn_local(async move {
+            let enc = encrypted_gcode.get_untracked();
+            let mut decryptor = Decrypt::new(enc.as_slice());
+            match selected.get().as_str() {
+                "1" => {
+                    let pwd = password.get_untracked();
+                    let fut = decryptor.with_password(pwd.as_bytes());
+                    let mut pinned_fut = pin!(fut);
+                    let waker = Waker::noop();
+                    let mut cx = Context::from_waker(waker);
+                    let mut iter: u32 = 0;
+                    loop {
+                        match pinned_fut.as_mut().poll(&mut cx) {
+                            Poll::Pending => {
+                                iter += 1;
+                                // Pause after so many iterations to enable the
+                                // UI to stay responsive.
+                                if iter >= MAX_ITER {
+                                    TimeoutFuture::new(1).await;
+                                    iter = 0;
+                                }
+                            }
+                            Poll::Ready(result) => {
+                                if result.is_err() {
+                                    spinner.set(false);
+                                    err_msg.set(Some("Decryption Error."));
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
-            }
-            "3" => {
-                let pwd = password.get_untracked();
-                let key = device_private_key.get_untracked();
-                if decryptor
-                    .with_password_and_device_key(
+                "2" => {
+                    let key = device_private_key.get_untracked();
+                    if decryptor.with_device_key(*key.as_bytes()).is_err() {
+                        spinner.set(false);
+                        err_msg.set(Some("Decryption error."));
+                    }
+                }
+                "3" => {
+                    let pwd = password.get_untracked();
+                    let key = device_private_key.get_untracked();
+                    let fut = decryptor.with_password_and_device_key(
                         pwd.as_bytes(),
                         *key.as_bytes(),
-                    )
-                    .is_err()
-                {
-                    err_msg.set(Some("Decryption error."));
+                    );
+                    let mut pinned_fut = pin!(fut);
+                    let waker = Waker::noop();
+                    let mut cx = Context::from_waker(waker);
+                    let mut iter: u32 = 0;
+                    loop {
+                        match pinned_fut.as_mut().poll(&mut cx) {
+                            Poll::Pending => {
+                                iter += 1;
+                                // Pause after so many iterations to enable the
+                                // UI to stay responsive.
+                                if iter >= MAX_ITER {
+                                    TimeoutFuture::new(1).await;
+                                    iter = 0;
+                                }
+                            }
+                            Poll::Ready(result) => {
+                                if result.is_err() {
+                                    spinner.set(false);
+                                    err_msg.set(Some("Decryption Error."));
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            let mut line: Vec<u8> = Vec::new();
+            let mut gcode: Vec<u8> = Vec::new();
+
+            loop {
+                match decryptor.next(&mut line) {
+                    Ok(Some(n)) => {
+                        gcode.extend_from_slice(&line[..n]);
+                        line.clear();
+                    }
+                    Ok(None) => {
+                        break;
+                    }
+                    Err(_e) => {
+                        spinner.set(false);
+                        err_msg.set(Some("Decryption Error."));
+                        return;
+                    }
                 }
             }
-            _ => {}
-        }
 
-        let mut line: Vec<u8> = Vec::new();
-        let mut gcode: Vec<u8> = Vec::new();
+            let fname = fname.get_untracked();
+            spinner.set(false);
 
-        loop {
-            match decryptor.next(&mut line) {
-                Ok(Some(n)) => {
-                    gcode.extend_from_slice(&line[..n]);
-                    line.clear();
-                }
-                Ok(None) => {
-                    std::println!("EOF");
-                    break;
+            match download_gcode(gcode, fname.as_str()) {
+                Ok(()) => {
+                    suc_msg.set(Some("Horray! You've decrypted some gcode."))
                 }
                 Err(e) => {
-                    std::println!("[Error] {e:?}");
-                    panic!("Errored");
+                    err_msg.set(Some(e));
                 }
             }
-        }
-
-        let fname = fname.get_untracked();
-
-        match download_gcode(gcode, fname.as_str()) {
-            Ok(()) => suc_msg.set(Some("Horray! You've decrypted some gcode.")),
-            Err(e) => {
-                err_msg.set(Some(e));
-            }
-        }
+        });
     };
 
     view! {
@@ -242,8 +301,14 @@ pub fn Decrypt(
                         <button
                             class="btn btn-outline-primary mt-1 me-3"
                             on:click=decrypt_and_download
+                            disabled=spinner
                         >
-                            {"Decrypt and Download"}
+                            <Show when=move || spinner.get()>
+                                <div class="spinner-border spinner-border-sm" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </Show>
+                            {" Decrypt and Download"}
                         </button>
                     </div>
                 </div>
