@@ -3,7 +3,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use egcode::decrypt::{Decrypt, DecryptedLines, Error};
+use egcode::decrypt::{DecryptBuilder, DecryptReader, Error};
 use gloo_timers::future::TimeoutFuture;
 use leptos::{prelude::*, reactive::spawn_local};
 use web_sys::{
@@ -18,8 +18,8 @@ use crate::download::download_gcode;
 const MAX_ITER: u32 = 10_000;
 
 async fn poll_fut<T: embedded_io::Read>(
-    fut: impl Future<Output = Result<DecryptedLines<T>, Error>>,
-) -> Result<DecryptedLines<T>, Error> {
+    fut: impl Future<Output = Result<DecryptReader<T>, Error>>,
+) -> Result<DecryptReader<T>, Error> {
     let mut pinned_fut = pin!(fut);
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
@@ -92,7 +92,7 @@ pub fn Decrypt(
             let enc = encrypted_gcode.get_untracked();
             let pwd = password.get_untracked();
             let key = device_private_key.get_untracked();
-            let decryptor = Decrypt::new(enc.as_slice());
+            let decryptor = DecryptBuilder::new(enc.as_slice());
             let line_reader = match selected.get().as_str() {
                 "1" => {
                     let fut = decryptor.with_password(pwd.as_bytes());
@@ -159,26 +159,30 @@ pub fn Decrypt(
     view! {
         <div class="row mt-5 justify-content-center">
             <div class="col-sm-10 col-md-8">
-        <Show when=move || suc_msg.get().is_some()>
-            <div class="alert alert-success mt-3">
-                <strong>{"[SUCCESS] "}</strong>
-                {move || suc_msg.get()}
-            </div>
-        </Show>
-        <Show when=move || err_msg.get().is_some()>
-            <div class="alert alert-danger mt-3">
-                <strong>{"[ERROR] "}</strong>
-                {move || err_msg.get()}
-            </div>
-        </Show>
+                <Show when=move || suc_msg.get().is_some()>
+                    <div class="alert alert-success mt-3">
+                        <strong>{"[SUCCESS] "}</strong>
+                        {move || suc_msg.get()}
+                    </div>
+                </Show>
+                <Show when=move || err_msg.get().is_some()>
+                    <div class="alert alert-danger mt-3">
+                        <strong>{"[ERROR] "}</strong>
+                        {move || err_msg.get()}
+                    </div>
+                </Show>
                 <div class="card">
                     <div class="card-header">
-                        {"Device Public Key"}
-                        <p class="text-muted"><small>{"This is a public key created for this device when you loaded this webpage.
-                            It is ephemeral and will change when you refresh thge page. Consider this the
-                            public key that would be stored and given out by the CNC machine. This will be the
-                            only device that can decrypt gcode that has used this key during it encryption step."}<br/>
-                        {"Give it a go by sharing this key with a friend who can then encrypt a gcode file and send it to you."}</small></p>
+                        {"Device Public Key"} <p class="text-muted">
+                            <small>
+                                {"This is a public key created for this device when you loaded this webpage.
+                                It is ephemeral and will change when you refresh thge page. Consider this the
+                                public key that would be stored and given out by the CNC machine. This will be the
+                                only device that can decrypt gcode that has used this key during it encryption step."}
+                                <br />
+                                {"Give it a go by sharing this key with a friend who can then encrypt a gcode file and send it to you."}
+                            </small>
+                        </p>
                     </div>
                     <div class="card-body">
                         <input class="form-control" bind:value=device_public_key_hex disabled />

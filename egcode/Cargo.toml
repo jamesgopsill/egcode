@@ -1,6 +1,6 @@
 [package]
 name = "egcode"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 license = "MIT"
 authors = ["James Gopsill"]
@@ -14,7 +14,8 @@ exclude = ["test-data"]
 [lib]
 
 [package.metadata.docs.rs]
-rustdoc-args = ["--no-deps", "--document-private-items"]
+all-features = true
+rustdoc-args = ["--document-private-items"]
 
 [dependencies]
 x25519-dalek = {

@@ -6,7 +6,7 @@ A `no_std` `async` `streaming` crate for encrypt/decrypt-ing [gcode (ISO 6983-1)
 
 ## Motivation
 
-**TLDR;** Your Intellectual Property is at risk of you're using plaintext gcode.
+**TLDR;** Your Intellectual Property is at risk if you're using plaintext gcode.
 
 `egcode` fills a gap in cryptographic tooling by provided end-to-end encryption for manufacturing code by ensuring assignment to specific CNC machines and the presence of a trusted individual to initiate the print job. Application areas include: makerspaces, in-house capability and manufacturing bureaus.
 
@@ -41,7 +41,7 @@ use embedded_io_adapters::std::FromStd;
 use futures::executor::block_on;
 use rand_core::OsRng;
 use egcode::encrypt::Encrypt;
-use egcode::decrypt::Decrypt;
+use egcode::decrypt::DecryptBuilder;
 
 let file = std::fs::File::open("test_data/box.gcode").unwrap();
 let reader = std::io::BufReader::new(file);
@@ -54,7 +54,7 @@ block_on(e.with_password(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
 println!("Encrypted Gcode Length: {:?}", writer.len());
 
 let reader = FromStd::new(writer.as_slice());
-let d = Decrypt::new(reader);
+let d = DecryptBuilder::new(reader);
 let mut line_reader = block_on(d.with_password(pwd.as_bytes())).unwrap();
 
 let mut line = std::vec::Vec::new();
