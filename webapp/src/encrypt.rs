@@ -104,13 +104,33 @@ pub fn Encrypt() -> impl IntoView {
                         err_msg.set(Some("Machine public key decode error."));
                         return;
                     };
-                    if encryptor
-                        .with_device_key(&mut writer, &machine_public_key)
-                        .is_err()
-                    {
-                        spinner.set(false);
-                        err_msg.set(Some("Encryption Error."));
-                        return;
+                    let fut = encryptor
+                        .with_device_key(&mut writer, &machine_public_key);
+                    let mut pinned_fut = pin!(fut);
+                    let waker = Waker::noop();
+                    let mut cx = Context::from_waker(waker);
+                    const MAX_ITER: u32 = 10_000;
+                    let mut iter: u32 = 0;
+                    loop {
+                        match pinned_fut.as_mut().poll(&mut cx) {
+                            Poll::Pending => {
+                                iter += 1;
+                                // Pause after so many iterations to enable the
+                                // UI to stay responsive.
+                                if iter >= MAX_ITER {
+                                    TimeoutFuture::new(1).await;
+                                    iter = 0;
+                                }
+                            }
+                            Poll::Ready(result) => {
+                                if result.is_err() {
+                                    spinner.set(false);
+                                    err_msg.set(Some("Encryption Error."));
+                                    return;
+                                }
+                                break;
+                            }
+                        }
                     }
                 }
                 "3" => {

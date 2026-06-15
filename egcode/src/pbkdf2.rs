@@ -3,28 +3,10 @@
 use core::{iter::zip, task::Poll};
 
 use futures::executor::block_on;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 pub(crate) struct AsyncPbkdf2<'a> {
-    password: &'a [u8],
-    salt: &'a [u8],
-}
-
-impl<'a> AsyncPbkdf2<'a> {
-    pub fn new(password: &'a [u8], salt: &'a [u8]) -> Self {
-        Self { password, salt }
-    }
-
-    pub fn generate(&'a self, rounds: u32) -> HashFuture<'a> {
-        HashFuture::new(self.password, self.salt, rounds)
-    }
-
-    pub fn block_on_generate(&'a self, rounds: u32) -> [u8; 32] {
-        block_on(self.generate(rounds))
-    }
-}
-
-pub(crate) struct HashFuture<'a> {
     password: &'a [u8],
     salt: &'a [u8],
     rounds: u32,
@@ -33,20 +15,14 @@ pub(crate) struct HashFuture<'a> {
     accumulator: [u8; 32],
 }
 
-impl<'a> HashFuture<'a> {
-    fn new(password: &'a [u8], salt: &'a [u8], rounds: u32) -> Self {
-        // Round 1
-        let mut data = [0u8; 16];
-        for (i, b) in salt.iter().enumerate() {
-            data[i] = *b;
-        }
-        // add the block index
-        // [0x00, 0x00, 0x00, 0x01];
-        data[15] = 0x01;
-
-        let mut hasher = Sha256::new();
-        hasher.update(data.as_slice());
-        let hash = hasher.finalize();
+impl<'a> AsyncPbkdf2<'a> {
+    pub fn new(password: &'a [u8], salt: &'a [u8], rounds: u32) -> Self {
+        // HMAC U_1
+        let mut hmac = Hmac::<Sha256>::new_from_slice(password).unwrap();
+        hmac.update(salt);
+        // block number
+        hmac.update(&1u32.to_be_bytes());
+        let hash = hmac.finalize().into_bytes();
 
         Self {
             password,
@@ -57,9 +33,17 @@ impl<'a> HashFuture<'a> {
             accumulator: hash.into(),
         }
     }
+
+    pub async fn generate(self) -> [u8; 32] {
+        self.await
+    }
+
+    pub fn block_on_generate(self) -> [u8; 32] {
+        block_on(self.generate())
+    }
 }
 
-impl<'a> Future for HashFuture<'a> {
+impl<'a> Future for AsyncPbkdf2<'a> {
     type Output = [u8; 32];
 
     fn poll(
@@ -96,8 +80,8 @@ mod tests {
         let mut salt = [0u8; 16];
         OsRng.fill_bytes(&mut salt);
         let password = b"password";
-        let hasher = AsyncPbkdf2::new(password.as_slice(), salt.as_slice());
-        let hash = hasher.block_on_generate(1_000);
+        let hasher = AsyncPbkdf2::new(password.as_slice(), salt.as_slice(), 1_000);
+        let hash = hasher.block_on_generate();
         std::println!("{:?}", hash);
     }
 }

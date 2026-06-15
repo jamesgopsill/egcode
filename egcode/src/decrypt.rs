@@ -54,10 +54,8 @@ impl<T: Read> Decrypt<T> {
         let nonce = self.read_nonce()?;
         self.nonce = Some(nonce);
 
-        // let mut secret = [0u8; 32];
-        // pbkdf2_hmac::<Sha256>(pwd, &salt, rounds, &mut secret);
-        let hasher = AsyncPbkdf2::new(pwd, salt.as_slice());
-        let secret = hasher.generate(rounds).await;
+        let hasher = AsyncPbkdf2::new(pwd, salt.as_slice(), rounds);
+        let secret = hasher.generate().await;
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(&secret) else {
             return Err(Error::CipherCreationFailed);
@@ -130,10 +128,8 @@ impl<T: Read> Decrypt<T> {
         // Create the cipher from the password to
         // decode the ephemeral_public_key
 
-        // let mut pwd_secret = [0u8; 32];
-        // pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, rounds, &mut pwd_secret);
-        let hasher = AsyncPbkdf2::new(pwd, pwd_salt.as_slice());
-        let pwd_secret = hasher.generate(rounds).await;
+        let hasher = AsyncPbkdf2::new(pwd, pwd_salt.as_slice(), rounds);
+        let pwd_secret = hasher.generate().await;
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(pwd_secret.as_slice()) else {
             return Err(Error::CipherCreationFailed);
@@ -311,8 +307,8 @@ mod tests {
         loop {
             match d.next(&mut line) {
                 Ok(Some(n)) => {
-                    let _l = std::string::String::from_utf8(line[..n].to_vec()).unwrap();
-                    // std::print!("[LINE]{l}");
+                    let l = std::string::String::from_utf8(line[..n].to_vec()).unwrap();
+                    std::print!("[LINE]{l}");
                     line.clear();
                 }
                 Ok(None) => {
@@ -336,7 +332,7 @@ mod tests {
         let e = Encrypt::new(reader, OsRng);
         let device_private_key = StaticSecret::random_from_rng(OsRng);
         let device_public_key = PublicKey::from(&device_private_key);
-        e.with_device_key(&mut writer, device_public_key.as_bytes())
+        e.block_on_with_device_key(&mut writer, device_public_key.as_bytes())
             .unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
@@ -394,8 +390,8 @@ mod tests {
         loop {
             match d.next(&mut line) {
                 Ok(Some(n)) => {
-                    let l = std::string::String::from_utf8(line[..n].to_vec()).unwrap();
-                    std::print!("[LINE]{l}");
+                    // let l = std::string::String::from_utf8(line[..n].to_vec()).unwrap();
+                    // std::print!("[LINE]{l}");
                     line.clear();
                 }
                 Ok(None) => {
