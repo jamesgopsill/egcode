@@ -6,7 +6,7 @@ pub fn NavBar() -> impl IntoView {
         <nav class="navbar navbar-expand-lg bg-body-tertiary">
             <div class="container-fluid">
                 <a class="navbar-brand" href="./">
-                    Encrypt GCode Demonstrator
+                    {"Encrypt/Decrypt gcode PoC"}
                 </a>
                 <button
                     class="navbar-toggler"
@@ -27,13 +27,18 @@ pub fn NavBar() -> impl IntoView {
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" href="./encrypt">
+                                Encrypt
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" href="./decrypt">
                                 Decrypt
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="./encrypt">
-                                Encrypt
+                            <a class="nav-link" target="__blank" href="https://github.com/jamesgopsill/egcode">
+                                <i class="bi bi-github"></i>
                             </a>
                         </li>
                     </ul>

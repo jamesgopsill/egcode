@@ -9,21 +9,17 @@ pub fn Index() -> impl IntoView {
                     <div class="container-fluid py-5">
                         <h1 class="display-5 fw-bold">{"Welcome to egcode"}</h1>
                         <p class="col-md-8 fs-4">
-                            {"Encrypting and signing gcode by users, devices and device owners."}
-                            <br /> {"Protecting our Engineering Intellectual Property."}
+                            {"Protecting Engineering Intellectual Property through gcode encryption."}
                         </p>
                     </div>
                 </div>
                 <p>
                     <strong>{"egcode"}</strong>
-                    {" is a Rust crate and standard being developed by the Design and Manufacturing Futures Lab at the University of Bristol
+                    {" is a Rust crate and standard being developed by the "}<a href="https://dmf-lab.co.uk/">{"Design and Manufacturing Futures Lab"}</a>{" at the University of Bristol
                     as part of their future manufacturing supply chains research. Gcode is the industry standard code that
                     details the manufacturing instructions that bring our digital designs to reality. It is ascii plaintext
                     and used by almost all additive and subtractive manufacturing processes.
                     "}
-                </p>
-                <p>
-                    {"Have a go today by using the encrypt and decrypt pages on this site! You can even connect to a printer and test the entire workflow!"}
                 </p>
                 <p>
                     {"Makerspaces commonly have USB sticks lying around for people load their gcode onto the machines and cloud services
@@ -62,7 +58,10 @@ pub fn Index() -> impl IntoView {
                     </li>
                 </ul>
                 <p>
-                    {"egcode is in alpha and we're keen to work with industry and education to evolve the standard. Our roadmap includes additional locks and signatures to
+                    {"Have a go today by using the encrypt and decrypt pages on this site to test the process!"}
+                </p>
+                <p>
+                    {"egcode is in alpha and we're keen to work with industry and education to evolve the idea. Our roadmap includes additional locks and signatures to
                     ensure the integrity of IP and the appropriate permissions have been granted to enable gcode to be submitted to devices. "}
                     <strong>
                         {"Please get in "}

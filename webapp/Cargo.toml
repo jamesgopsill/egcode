@@ -33,4 +33,5 @@ x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 rand_core = "0.6"
 getrandom = { version = "0.2", features = ["js"] }
 embedded-io-adapters = { version = "0.7", features = ["std"] }
+embedded-io = "0.7"
 egcode = { path = "../egcode" }

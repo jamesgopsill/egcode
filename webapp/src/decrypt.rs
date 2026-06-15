@@ -3,7 +3,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use egcode::decrypt::Decrypt;
+use egcode::decrypt::{Decrypt, DecryptedLines, Error};
 use gloo_timers::future::TimeoutFuture;
 use leptos::{prelude::*, reactive::spawn_local};
 use web_sys::{
@@ -16,6 +16,31 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use crate::download::download_gcode;
 
 const MAX_ITER: u32 = 10_000;
+
+async fn poll_fut<T: embedded_io::Read>(
+    fut: impl Future<Output = Result<DecryptedLines<T>, Error>>,
+) -> Result<DecryptedLines<T>, Error> {
+    let mut pinned_fut = pin!(fut);
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    let mut iter: u32 = 0;
+    loop {
+        match pinned_fut.as_mut().poll(&mut cx) {
+            Poll::Pending => {
+                iter += 1;
+                // Pause after so many iterations to enable the
+                // UI to stay responsive.
+                if iter >= MAX_ITER {
+                    TimeoutFuture::new(1).await;
+                    iter = 0;
+                }
+            }
+            Poll::Ready(result) => {
+                return result;
+            }
+        }
+    }
+}
 
 #[component]
 pub fn Decrypt(
@@ -35,78 +60,6 @@ pub fn Decrypt(
     let selected = RwSignal::<String>::new("3".to_string());
     let fname = RwSignal::<String>::default();
     let spinner = RwSignal::<bool>::new(false);
-
-    /*
-    let connect = move |_: MouseEvent| {
-        spawn_local(async move {
-            let window = window();
-            let serial = window.navigator().serial();
-
-            let Ok(p) = JsFuture::from(serial.request_port()).await else {
-                err_msg.set(Some("Connection cancelled by user."));
-                return;
-            };
-            port.set(Some(p));
-
-            let options = SerialOptions::new(115_200);
-            let p = port.get().unwrap();
-
-            if JsFuture::from(p.open(&options)).await.is_err() {
-                err_msg.set(Some("Failed to open port."));
-                return;
-            }
-
-            let readable = p.readable();
-            let Ok(reader): Result<ReadableStreamDefaultReader, _> =
-                readable.get_reader().dyn_into()
-            else {
-                err_msg.set(Some("Could not create readable stream."));
-                return;
-            };
-
-            let mut log: String = String::new();
-            loop {
-                let read_promise = reader.read();
-                match JsFuture::from(read_promise).await {
-                    Ok(r) => {
-                        // Result is a JS object: { value: Uint8Array, done: bool }
-                        let done = js_sys::Reflect::get(&r, &"done".into())
-                            .unwrap()
-                            .as_bool()
-                            .unwrap_or(true);
-
-                        if done {
-                            break;
-                        }
-
-                        let chunk =
-                            js_sys::Reflect::get(&r, &"value".into()).unwrap();
-                        let uint8_array = js_sys::Uint8Array::new(&chunk);
-                        let bytes = uint8_array.to_vec();
-
-                        if let Ok(text) = String::from_utf8(bytes) {
-                            log.push_str(&text);
-                            let lines: Vec<&str> = log.lines().collect();
-                            // Ignore the last line as is may be incomplete.
-                            for line in &lines[..lines.len() - 1] {
-                                console_log(line);
-                                // TODO: if an ok signal then flag to send data.
-                            }
-                            match lines.last() {
-                                Some(l) => log = l.to_string(),
-                                None => log.clear(),
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        err_msg.set(Some("Read error."));
-                        return;
-                    }
-                }
-            }
-        });
-    };
-    */
 
     let load_data = move |e: Event| {
         let target = event_target::<HtmlInputElement>(&e);
@@ -137,85 +90,43 @@ pub fn Decrypt(
         spinner.set(true);
         spawn_local(async move {
             let enc = encrypted_gcode.get_untracked();
-            let mut decryptor = Decrypt::new(enc.as_slice());
-            match selected.get().as_str() {
+            let pwd = password.get_untracked();
+            let key = device_private_key.get_untracked();
+            let decryptor = Decrypt::new(enc.as_slice());
+            let line_reader = match selected.get().as_str() {
                 "1" => {
-                    let pwd = password.get_untracked();
                     let fut = decryptor.with_password(pwd.as_bytes());
-                    let mut pinned_fut = pin!(fut);
-                    let waker = Waker::noop();
-                    let mut cx = Context::from_waker(waker);
-                    let mut iter: u32 = 0;
-                    loop {
-                        match pinned_fut.as_mut().poll(&mut cx) {
-                            Poll::Pending => {
-                                iter += 1;
-                                // Pause after so many iterations to enable the
-                                // UI to stay responsive.
-                                if iter >= MAX_ITER {
-                                    TimeoutFuture::new(1).await;
-                                    iter = 0;
-                                }
-                            }
-                            Poll::Ready(result) => {
-                                if result.is_err() {
-                                    spinner.set(false);
-                                    err_msg.set(Some("Decryption Error."));
-                                    return;
-                                }
-                                break;
-                            }
-                        }
-                    }
+                    poll_fut(fut).await
                 }
                 "2" => {
-                    let key = device_private_key.get_untracked();
-                    if decryptor.with_device_key(*key.as_bytes()).is_err() {
-                        spinner.set(false);
-                        err_msg.set(Some("Decryption error."));
-                    }
+                    let fut = decryptor.with_device_key(key.to_bytes());
+                    poll_fut(fut).await
                 }
                 "3" => {
-                    let pwd = password.get_untracked();
-                    let key = device_private_key.get_untracked();
                     let fut = decryptor.with_password_and_device_key(
                         pwd.as_bytes(),
-                        *key.as_bytes(),
+                        key.to_bytes(),
                     );
-                    let mut pinned_fut = pin!(fut);
-                    let waker = Waker::noop();
-                    let mut cx = Context::from_waker(waker);
-                    let mut iter: u32 = 0;
-                    loop {
-                        match pinned_fut.as_mut().poll(&mut cx) {
-                            Poll::Pending => {
-                                iter += 1;
-                                // Pause after so many iterations to enable the
-                                // UI to stay responsive.
-                                if iter >= MAX_ITER {
-                                    TimeoutFuture::new(1).await;
-                                    iter = 0;
-                                }
-                            }
-                            Poll::Ready(result) => {
-                                if result.is_err() {
-                                    spinner.set(false);
-                                    err_msg.set(Some("Decryption Error."));
-                                    return;
-                                }
-                                break;
-                            }
-                        }
-                    }
+                    poll_fut(fut).await
                 }
-                _ => {}
-            }
+                _ => {
+                    spinner.set(false);
+                    err_msg.set(Some("Method not supported."));
+                    return;
+                }
+            };
+
+            let Ok(mut line_reader) = line_reader else {
+                spinner.set(false);
+                err_msg.set(Some("Validation failed"));
+                return;
+            };
 
             let mut line: Vec<u8> = Vec::new();
             let mut gcode: Vec<u8> = Vec::new();
 
             loop {
-                match decryptor.next(&mut line) {
+                match line_reader.read_line(&mut line) {
                     Ok(Some(n)) => {
                         gcode.extend_from_slice(&line[..n]);
                         line.clear();
@@ -246,6 +157,8 @@ pub fn Decrypt(
     };
 
     view! {
+        <div class="row mt-5 justify-content-center">
+            <div class="col-sm-10 col-md-8">
         <Show when=move || suc_msg.get().is_some()>
             <div class="alert alert-success mt-3">
                 <strong>{"[SUCCESS] "}</strong>
@@ -258,11 +171,14 @@ pub fn Decrypt(
                 {move || err_msg.get()}
             </div>
         </Show>
-        <div class="row mt-5 justify-content-center">
-            <div class="col-sm-10 col-md-8">
                 <div class="card">
                     <div class="card-header">
-                        {"This Devices Public Key (A new one is created each time the page is refreshed)."}
+                        {"Device Public Key"}
+                        <p class="text-muted"><small>{"This is a public key created for this device when you loaded this webpage.
+                            It is ephemeral and will change when you refresh thge page. Consider this the
+                            public key that would be stored and given out by the CNC machine. This will be the
+                            only device that can decrypt gcode that has used this key during it encryption step."}<br/>
+                        {"Give it a go by sharing this key with a friend who can then encrypt a gcode file and send it to you."}</small></p>
                     </div>
                     <div class="card-body">
                         <input class="form-control" bind:value=device_public_key_hex disabled />
@@ -336,4 +252,75 @@ pub fn Decrypt(
     <button class="btn btn-outline-primary" disabled=move || !connected()>
         {"Decrypt and Print"}
     </button>
+*/
+/*
+let connect = move |_: MouseEvent| {
+    spawn_local(async move {
+        let window = window();
+        let serial = window.navigator().serial();
+
+        let Ok(p) = JsFuture::from(serial.request_port()).await else {
+            err_msg.set(Some("Connection cancelled by user."));
+            return;
+        };
+        port.set(Some(p));
+
+        let options = SerialOptions::new(115_200);
+        let p = port.get().unwrap();
+
+        if JsFuture::from(p.open(&options)).await.is_err() {
+            err_msg.set(Some("Failed to open port."));
+            return;
+        }
+
+        let readable = p.readable();
+        let Ok(reader): Result<ReadableStreamDefaultReader, _> =
+            readable.get_reader().dyn_into()
+        else {
+            err_msg.set(Some("Could not create readable stream."));
+            return;
+        };
+
+        let mut log: String = String::new();
+        loop {
+            let read_promise = reader.read();
+            match JsFuture::from(read_promise).await {
+                Ok(r) => {
+                    // Result is a JS object: { value: Uint8Array, done: bool }
+                    let done = js_sys::Reflect::get(&r, &"done".into())
+                        .unwrap()
+                        .as_bool()
+                        .unwrap_or(true);
+
+                    if done {
+                        break;
+                    }
+
+                    let chunk =
+                        js_sys::Reflect::get(&r, &"value".into()).unwrap();
+                    let uint8_array = js_sys::Uint8Array::new(&chunk);
+                    let bytes = uint8_array.to_vec();
+
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        log.push_str(&text);
+                        let lines: Vec<&str> = log.lines().collect();
+                        // Ignore the last line as is may be incomplete.
+                        for line in &lines[..lines.len() - 1] {
+                            console_log(line);
+                            // TODO: if an ok signal then flag to send data.
+                        }
+                        match lines.last() {
+                            Some(l) => log = l.to_string(),
+                            None => log.clear(),
+                        }
+                    }
+                }
+                Err(_) => {
+                    err_msg.set(Some("Read error."));
+                    return;
+                }
+            }
+        }
+    });
+};
 */

@@ -1,5 +1,4 @@
 use embedded_io::{ErrorType, Read, Write};
-use futures::executor::block_on;
 use hkdf::Hkdf;
 use rand_core::{CryptoRng, RngCore};
 use sha2::Sha256;
@@ -7,10 +6,12 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::{Method, chacha::ChaChaEncrypt, pbkdf2::AsyncPbkdf2};
 
+/// The types of error that might be encountered when
+/// using `Encrypt`.
 #[derive(Debug)]
 pub enum Error<E> {
-    UnprocessablePublicKey,
-    CipherCreationFailed,
+    PublicKeyError,
+    CipherError,
     BlockError,
     KeyError,
     WriteError(E),
@@ -53,7 +54,10 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         Self { reader, rng }
     }
 
-    /// TODO
+    /// Password protects an encrypted gcode file. A password is provide by the user
+    /// and a specified set out of rounds for the async PBKDF2-HMAC-SHA2 (`AsyncPbkdf2`) implementation
+    /// to run to generate a hash that is then used as the key for the `ChaCha20Poly1305`
+    /// encryption algorithm. See `AsyncPbkdf2` on recoommendations on the number of rounds.
     pub async fn with_password<W>(
         mut self,
         writer: &mut W,
@@ -67,9 +71,9 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         let mut salt = [0u8; 16];
         self.rng.fill_bytes(&mut salt);
 
-        // let mut secret = [0u8; 32];
-        // pbkdf2_hmac::<Sha256>(pwd, &salt, rounds, &mut secret);
-        let hasher = AsyncPbkdf2::new(pwd, salt.as_slice(), rounds);
+        let Ok(hasher) = AsyncPbkdf2::new(pwd, salt.as_slice(), rounds) else {
+            return Err(Error::CipherError);
+        };
         let secret = hasher.generate().await;
 
         let mut nonce = [0u8; 12];
@@ -90,29 +94,23 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         Ok(())
     }
 
-    pub fn block_on_with_password<W>(
-        self,
-        writer: &mut W,
-        pwd: &[u8],
-        rounds: u32,
-    ) -> Result<(), Error<W::Error>>
-    where
-        W: Write + ErrorType,
-    {
-        let fut = self.with_password(writer, pwd, rounds);
-        block_on(fut)
-    }
-
+    /// End-to-end protects a gcode file against a specific device public-private key pair.
+    /// The process generates an ephemeral public-private key pair. The ephemeral private key
+    /// is combined with the device public key to generate a shared secret. The shared secret
+    /// is then passed through a HMAC-based Key Derivation Function (HKDF) to provide a secret
+    /// suitable for `ChaCha20Poly1305`. The code is then ecnrypted and the ephemeral public key
+    /// is provided in the header. Only a device with the device private key will be able to
+    /// decrypt the gcode.
     pub async fn with_device_key<W>(
         mut self,
         writer: &mut W,
-        device_private_key: &[u8],
+        device_public_key: &[u8],
     ) -> Result<(), Error<W::Error>>
     where
         W: Write + ErrorType,
     {
-        let Ok(bob): Result<[u8; 32], _> = device_private_key.try_into() else {
-            return Err(Error::UnprocessablePublicKey);
+        let Ok(bob): Result<[u8; 32], _> = device_public_key.try_into() else {
+            return Err(Error::PublicKeyError);
         };
         let bob = PublicKey::from(bob);
 
@@ -146,30 +144,25 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         Ok(())
     }
 
-    pub fn block_on_with_device_key<W>(
-        self,
-        writer: &mut W,
-        device_private_key: &[u8],
-    ) -> Result<(), Error<W::Error>>
-    where
-        W: Write + ErrorType,
-    {
-        let fut = self.with_device_key(writer, device_private_key);
-        block_on(fut)
-    }
-
+    /// Combines `with_password` and `with_device_key`. The HKDF derive secret from the shared secret
+    /// derived from the ephemeral private key and device public key is used to encrypt the gcode. The
+    /// hash generated from PBKDF2-SHA2-HMAC is used to encrypt the ephemeral public key. Thus, you
+    /// need the password to decrypt the ephemeral public key and then pair the ephemeral public key
+    /// with the device key to decrypt the gcode thereby providing the need for the gcode to be placed
+    /// on the right device and authorised in the presence of a trusted individual who knows the password
+    /// to that code.
     pub async fn with_password_and_device_key<W>(
         mut self,
         writer: &mut W,
         pwd: &[u8],
         rounds: u32,
-        device_private_key: &[u8],
+        device_public_key: &[u8],
     ) -> Result<(), Error<W::Error>>
     where
         W: Write + ErrorType,
     {
-        let Ok(bob): Result<[u8; 32], _> = device_private_key.try_into() else {
-            return Err(Error::UnprocessablePublicKey);
+        let Ok(bob): Result<[u8; 32], _> = device_public_key.try_into() else {
+            return Err(Error::PublicKeyError);
         };
         let bob = PublicKey::from(bob);
 
@@ -196,9 +189,9 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         let mut pwd_nonce = [0u8; 12];
         self.rng.fill_bytes(&mut pwd_nonce);
 
-        //let mut pwd_secret = [0u8; 32];
-        //pbkdf2_hmac::<Sha256>(pwd, &pwd_salt, rounds, &mut pwd_secret);
-        let hasher = AsyncPbkdf2::new(pwd, pwd_salt.as_slice(), rounds);
+        let Ok(hasher) = AsyncPbkdf2::new(pwd, pwd_salt.as_slice(), rounds) else {
+            return Err(Error::CipherError);
+        };
         let pwd_secret = hasher.generate().await;
 
         writer.write_all(b"EGCO")?;
@@ -227,25 +220,12 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
 
         Ok(())
     }
-
-    pub fn block_on_with_password_and_device_key<W>(
-        self,
-        writer: &mut W,
-        pwd: &[u8],
-        rounds: u32,
-        device_private_key: &[u8],
-    ) -> Result<(), Error<W::Error>>
-    where
-        W: Write + ErrorType,
-    {
-        let fut = self.with_password_and_device_key(writer, pwd, rounds, device_private_key);
-        block_on(fut)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use embedded_io_adapters::std::FromStd;
+    use futures::executor::block_on;
     use rand_core::OsRng;
 
     use super::*;
@@ -260,7 +240,7 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        let r = e.block_on_with_password(&mut writer, pwd.as_bytes(), 10_000);
+        let r = block_on(e.with_password(&mut writer, pwd.as_bytes(), 10_000));
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
         assert!(r.is_ok())
     }
@@ -274,7 +254,7 @@ mod tests {
         let mut device_key = [0u8; 32];
         OsRng.fill_bytes(&mut device_key);
         let e = Encrypt::new(reader, OsRng);
-        let r = e.block_on_with_device_key(&mut writer, device_key.as_slice());
+        let r = block_on(e.with_device_key(&mut writer, device_key.as_slice()));
         assert!(r.is_ok())
     }
 
@@ -288,12 +268,12 @@ mod tests {
         OsRng.fill_bytes(&mut device_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        let r = e.block_on_with_password_and_device_key(
+        let r = block_on(e.with_password_and_device_key(
             &mut writer,
             pwd.as_bytes(),
             10_000,
             device_key.as_slice(),
-        );
+        ));
         assert!(r.is_ok())
     }
 }

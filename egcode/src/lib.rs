@@ -11,7 +11,7 @@ pub mod encrypt;
 pub(crate) mod chacha;
 pub(crate) mod pbkdf2;
 
-// The default block size used by chacha20poly1305.
+/// The default block size used by the ChaCha20Poly1305 cipher.
 const BLOCK_SIZE: usize = 1024;
 
 /// Industry standard AES-GCM tag size.

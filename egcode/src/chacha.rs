@@ -31,7 +31,7 @@ where
         nonce: &'a [u8],
     ) -> Result<Self, Error<W::Error>> {
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(secret) else {
-            return Err(Error::CipherCreationFailed);
+            return Err(Error::CipherError);
         };
         Ok(Self {
             reader,

@@ -1,8 +1,6 @@
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce, Tag};
 use embedded_io::{Read, Write};
-use futures::executor::block_on;
 use hkdf::Hkdf;
-// use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -10,38 +8,35 @@ use crate::{BLOCK_SIZE, Method, TAG_SIZE, pbkdf2::AsyncPbkdf2};
 
 extern crate std;
 
+/// The possible errors that might arise from decrypting
+/// a gcode file.
 #[derive(Debug)]
 pub enum Error {
-    MustValidateFirst,
     InvalidMagic,
     InvalidMethod,
     WrongVersion,
     SeekError,
-    CipherCreationFailed,
+    CipherError,
     ReadError,
     WriteError,
     DecryptError,
     KeyError,
 }
 
-pub struct Decrypt<T: Read> {
-    reader: T,
-    cipher: Option<ChaCha20Poly1305>,
-    nonce: Option<Nonce>,
-    buffer: [u8; BLOCK_SIZE * 2],
+/// Decrypts encrypted gcode.
+pub struct Decrypt<R: Read> {
+    reader: R,
 }
 
-impl<T: Read> Decrypt<T> {
-    pub fn new(reader: T) -> Self {
-        Self {
-            reader,
-            cipher: None,
-            nonce: None,
-            buffer: [0u8; BLOCK_SIZE * 2],
-        }
+impl<R: Read> Decrypt<R> {
+    /// Create a new instance of the `Decrypt`. You must then use `with_password`, `with_device_key`
+    /// or `with_password_and_device_key` before call
+    pub fn new(reader: R) -> Self {
+        Self { reader }
     }
 
-    pub async fn with_password(&mut self, pwd: &[u8]) -> Result<(), Error> {
+    /// Provides a `DecryptedLines` iterator if the password is valid for the file.
+    pub async fn with_password(mut self, pwd: &[u8]) -> Result<DecryptedLines<R>, Error> {
         self.read_magic()?;
         let Ok(method) = Method::try_from_reader(&mut self.reader) else {
             return Err(Error::InvalidMethod);
@@ -52,25 +47,25 @@ impl<T: Read> Decrypt<T> {
         let rounds = self.read_rounds()?;
         let salt = self.read_salt()?;
         let nonce = self.read_nonce()?;
-        self.nonce = Some(nonce);
 
-        let hasher = AsyncPbkdf2::new(pwd, salt.as_slice(), rounds);
+        let Ok(hasher) = AsyncPbkdf2::new(pwd, salt.as_slice(), rounds) else {
+            return Err(Error::CipherError);
+        };
         let secret = hasher.generate().await;
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(&secret) else {
-            return Err(Error::CipherCreationFailed);
+            return Err(Error::CipherError);
         };
-        self.cipher = Some(cipher);
 
-        Ok(())
+        let lines = DecryptedLines::new(self.reader, nonce, cipher);
+        Ok(lines)
     }
 
-    pub fn block_on_with_password(&mut self, pwd: &[u8]) -> Result<(), Error> {
-        let fut = self.with_password(pwd);
-        block_on(fut)
-    }
-
-    pub fn with_device_key(&mut self, device_private_key: [u8; 32]) -> Result<(), Error> {
+    /// Provides a `DecryptedLines` iterator if the device private key is valid for the file.
+    pub async fn with_device_key(
+        mut self,
+        device_private_key: [u8; 32],
+    ) -> Result<DecryptedLines<R>, Error> {
         self.read_magic()?;
         let Ok(method) = Method::try_from_reader(&mut self.reader) else {
             return Err(Error::InvalidMethod);
@@ -80,7 +75,6 @@ impl<T: Read> Decrypt<T> {
         }
         let salt = self.read_salt()?;
         let nonce = self.read_nonce()?;
-        self.nonce = Some(nonce);
 
         let mut ephemeral_public_key = [0u8; 32];
         self.reader
@@ -98,18 +92,19 @@ impl<T: Read> Decrypt<T> {
         }
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(&gcode_secret) else {
-            return Err(Error::CipherCreationFailed);
+            return Err(Error::CipherError);
         };
-        self.cipher = Some(cipher);
 
-        Ok(())
+        let lines = DecryptedLines::new(self.reader, nonce, cipher);
+        Ok(lines)
     }
 
+    /// Provides a `DecryptedLines` iterator if the password and device private key is valid for the file.
     pub async fn with_password_and_device_key(
-        &mut self,
+        mut self,
         pwd: &[u8],
         device_private_key: [u8; 32],
-    ) -> Result<(), Error> {
+    ) -> Result<DecryptedLines<R>, Error> {
         self.read_magic()?;
         let Ok(method) = Method::try_from_reader(&mut self.reader) else {
             return Err(Error::InvalidMethod);
@@ -123,16 +118,17 @@ impl<T: Read> Decrypt<T> {
         let pwd_nonce = self.read_nonce()?;
         let gcode_salt = self.read_salt()?;
         let gcode_nonce = self.read_nonce()?;
-        self.nonce = Some(gcode_nonce);
 
         // Create the cipher from the password to
         // decode the ephemeral_public_key
 
-        let hasher = AsyncPbkdf2::new(pwd, pwd_salt.as_slice(), rounds);
+        let Ok(hasher) = AsyncPbkdf2::new(pwd, pwd_salt.as_slice(), rounds) else {
+            return Err(Error::CipherError);
+        };
         let pwd_secret = hasher.generate().await;
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(pwd_secret.as_slice()) else {
-            return Err(Error::CipherCreationFailed);
+            return Err(Error::CipherError);
         };
 
         let mut ephemeral_public_key = [0u8; 32];
@@ -163,20 +159,11 @@ impl<T: Read> Decrypt<T> {
         }
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(&gcode_secret) else {
-            return Err(Error::CipherCreationFailed);
+            return Err(Error::CipherError);
         };
-        self.cipher = Some(cipher);
 
-        Ok(())
-    }
-
-    pub fn block_on_with_password_and_device_key(
-        &mut self,
-        pwd: &[u8],
-        device_private_key: [u8; 32],
-    ) -> Result<(), Error> {
-        let fut = self.with_password_and_device_key(pwd, device_private_key);
-        block_on(fut)
+        let lines = DecryptedLines::new(self.reader, gcode_nonce, cipher);
+        Ok(lines)
     }
 
     fn read_rounds(&mut self) -> Result<u32, Error> {
@@ -214,16 +201,35 @@ impl<T: Read> Decrypt<T> {
         }
         Ok(())
     }
+}
 
-    pub fn next(&mut self, writer: &mut impl Write) -> Result<Option<usize>, Error> {
-        let Some(cipher) = self.cipher.as_ref() else {
-            return Err(Error::MustValidateFirst);
-        };
-        let Some(nonce) = self.nonce.as_ref() else {
-            return Err(Error::MustValidateFirst);
-        };
+/// An iterator over lines that are being stream decrypted
+/// by the `ChaCha20Poly1305` algorithm that has been validated
+/// using `Decrypt`.
+pub struct DecryptedLines<T: Read> {
+    reader: T,
+    cipher: ChaCha20Poly1305,
+    nonce: Nonce,
+    // Twice the size of a block as there may be remaining
+    // gcode without a newline in the buffer when adding
+    // a new block of unencrypted gcode. Gcode has a maximum
+    // width of 256 characters per line so we should not
+    // go over this on well-behaved gcode.
+    buffer: [u8; BLOCK_SIZE * 2],
+}
 
-        // Is there a line in the buffer
+impl<T: Read> DecryptedLines<T> {
+    fn new(reader: T, nonce: Nonce, cipher: ChaCha20Poly1305) -> Self {
+        Self {
+            reader,
+            nonce,
+            cipher,
+            buffer: [0u8; BLOCK_SIZE * 2],
+        }
+    }
+
+    /// Iteratively write a line of decrypted gcode to a buffer.
+    pub fn read_line(&mut self, writer: &mut impl Write) -> Result<Option<usize>, Error> {
         if let Some(idx) = self.buffer.iter().position(|&b| b == b'\n') {
             let idx = idx + 1; // include the new line byte
             // Found a newline.
@@ -238,7 +244,7 @@ impl<T: Read> Decrypt<T> {
             Ok(Some(idx))
         } else {
             // No more lines in the buffer
-            // Try and read another
+            // Try read and decrypt another
             let mut block = [0u8; BLOCK_SIZE];
             let mut tag = [0u8; TAG_SIZE];
             let n = self.reader.read(&mut tag).map_err(|_| Error::ReadError)?;
@@ -248,8 +254,8 @@ impl<T: Read> Decrypt<T> {
             }
             let tag = Tag::from_slice(&tag);
             let n = self.reader.read(&mut block).map_err(|_| Error::ReadError)?;
-            cipher
-                .decrypt_in_place_detached(nonce, &[], &mut block[..n], tag)
+            self.cipher
+                .decrypt_in_place_detached(&self.nonce, &[], &mut block[..n], tag)
                 .map_err(|_| Error::DecryptError)?;
             // Find the first null byte
             let Some(idx) = self.buffer.iter().position(|&b| b == 0) else {
@@ -278,6 +284,7 @@ impl<T: Read> Decrypt<T> {
 #[cfg(test)]
 mod tests {
     use embedded_io_adapters::std::FromStd;
+    use futures::executor::block_on;
     use rand_core::OsRng;
 
     use crate::encrypt::Encrypt;
@@ -294,18 +301,17 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        e.block_on_with_password(&mut writer, pwd.as_bytes(), 10_000)
-            .unwrap();
+        block_on(e.with_password(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
         let reader = FromStd::new(writer.as_slice());
-        let mut d = Decrypt::new(reader);
-        d.block_on_with_password(pwd.as_bytes()).unwrap();
+        let d = Decrypt::new(reader);
+        let mut line_decryptor = block_on(d.with_password(pwd.as_bytes())).unwrap();
 
         let mut line = std::vec::Vec::new();
 
         loop {
-            match d.next(&mut line) {
+            match line_decryptor.read_line(&mut line) {
                 Ok(Some(n)) => {
                     let l = std::string::String::from_utf8(line[..n].to_vec()).unwrap();
                     std::print!("[LINE]{l}");
@@ -332,19 +338,18 @@ mod tests {
         let e = Encrypt::new(reader, OsRng);
         let device_private_key = StaticSecret::random_from_rng(OsRng);
         let device_public_key = PublicKey::from(&device_private_key);
-        e.block_on_with_device_key(&mut writer, device_public_key.as_bytes())
-            .unwrap();
+        block_on(e.with_device_key(&mut writer, device_public_key.as_bytes())).unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
         let reader = FromStd::new(writer.as_slice());
-        let mut d = Decrypt::new(reader);
         let bytes: [u8; 32] = device_private_key.to_bytes();
-        d.with_device_key(bytes).unwrap();
+        let d = Decrypt::new(reader);
+        let mut line_decryptor = d.with_device_key(bytes).unwrap();
 
         let mut line = std::vec::Vec::new();
 
         loop {
-            match d.next(&mut line) {
+            match line_decryptor.read_line(&mut line) {
                 Ok(Some(n)) => {
                     let _l = std::string::String::from_utf8(line[..n].to_vec()).unwrap();
                     // std::print!("[LINE]{l}");
@@ -372,24 +377,24 @@ mod tests {
         let device_public_key = PublicKey::from(&device_private_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        e.block_on_with_password_and_device_key(
+        block_on(e.with_password_and_device_key(
             &mut writer,
             pwd.as_bytes(),
             10_000,
             device_public_key.as_bytes(),
-        )
+        ))
         .unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
         let reader = FromStd::new(writer.as_slice());
-        let mut d = Decrypt::new(reader);
         let device_private_key: [u8; 32] = device_private_key.to_bytes();
-        d.block_on_with_password_and_device_key(pwd.as_bytes(), device_private_key)
-            .unwrap();
+        let d = Decrypt::new(reader);
+        let mut line_decryptor =
+            block_on(d.with_password_and_device_key(pwd.as_bytes(), device_private_key)).unwrap();
 
         let mut line = std::vec::Vec::new();
         loop {
-            match d.next(&mut line) {
-                Ok(Some(n)) => {
+            match line_decryptor.read_line(&mut line) {
+                Ok(Some(_n)) => {
                     // let l = std::string::String::from_utf8(line[..n].to_vec()).unwrap();
                     // std::print!("[LINE]{l}");
                     line.clear();
