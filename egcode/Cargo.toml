@@ -8,7 +8,7 @@ description = "no_std async streaming encrypt/decrypt tooling for gcode."
 repository = "https://github.com/jamesgopsill/egcode"
 readme = "README.md"
 keywords = ["gcode", "manufacturing", "cryptography"]
-categories = ["no-std", "embedded", "cryptography", "manufacturing"]
+categories = ["no-std", "embedded", "cryptography", "wasm"]
 exclude = ["test-data"]
 
 [lib]
