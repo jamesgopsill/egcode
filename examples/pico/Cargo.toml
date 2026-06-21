@@ -3,14 +3,17 @@ name = "pico_example"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Examples using ACS37800 with a Raspberry Pi Pico 2 W."
-repository = "https://github.com/jamesgopsill/acs37800"
 readme = "README.md"
 
 [profile.release]
-lto = false
-codegen-unit = 1
-debug = 2
+debug = true
+#opt-level = 1            # Debug default: no optimization
+#debug = true             # Debug default: include symbols
+#debug-assertions = false  # Debug default: keep assert! and debug_assert!
+#overflow-checks = false   # Debug default: panic on integer overflow
+#lto = false              # Debug default: no link-time optimization
+#incremental = true       # Debug default
+#codegen-units = 256      # Debug default: faster compilation, less optimization
 
 [dependencies]
 cortex-m = { version = "0.7", features = ["inline-asm"] }

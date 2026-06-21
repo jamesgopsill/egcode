@@ -1,4 +1,3 @@
-use defmt::info;
 use digest::{
     FixedOutput, FixedOutputReset, HashMarker, OutputSizeUser, Reset, Update,
     common::BlockSizeUser,
@@ -24,6 +23,7 @@ impl OutputSizeUser for RpSha2 {
 }
 
 impl RpSha2 {
+    /*
     pub fn new() -> Self {
         let mut s = Self {
             bits_written: 0,
@@ -33,6 +33,7 @@ impl RpSha2 {
         s.reset();
         s
     }
+    */
 
     fn write_word(&mut self, word: [u8; 4]) {
         while !SHA256.csr().read().wdata_rdy() {
@@ -79,19 +80,8 @@ impl RpSha2 {
         let _should_be_zero = self.bits_written % 512;
         //info!("Should be zero: {}", should_be_zero);
 
-        let mut n = 0;
-        loop {
-            let valid = SHA256.csr().read().sum_vld();
-            //info!("Waiting: {}", valid);
-            if valid {
-                break;
-            }
-            n += 1;
-            if n > 5 {
-                //info!("Timeout");
-                break;
-            }
-        }
+        // Could loop forever...
+        while !SHA256.csr().read().sum_vld() {}
         let arr = [
             SHA256.sum0().read(),
             SHA256.sum1().read(),

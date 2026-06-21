@@ -29,19 +29,13 @@ async fn main(_spawner: Spawner) {
     let gcode = "G1 X0 Y0\n G1 X1 Y0\n";
     info!("Gcode bytes: {}", gcode.as_bytes());
 
-    let mut sha_hw = RpSha2::new();
-    sha_hw.update(gcode.as_bytes());
-    let hash = sha_hw.finalize();
+    let hash = generate_hash::<RpSha2>(gcode.as_bytes());
+    info!("[HW_SHA] ({:?}) {:?}", hash.len(), hash.as_slice());
+    let hash = generate_hash::<RpSha2>(gcode.as_bytes());
+    info!("[HW_SHA] ({:?}) {:?}", hash.len(), hash.as_slice());
 
-    info!("[HW SHA] {:?}", hash.as_slice());
-
-    info!("[HW SHA LENGTH] {:?}", hash.len());
-
-    let mut sha_sw = Sha256::new();
-    Digest::update(&mut sha_sw, gcode);
-    let hash = sha_sw.finalize();
-    info!("[SW SHA] {:?}", hash.as_slice());
-    info!("[SW SHA LENGTH] {:?}", hash.len());
+    let hash = generate_hash::<Sha256>(gcode.as_bytes());
+    info!("[SW_SHA] ({:?}) {:?}", hash.len(), hash.as_slice());
 
     info!("Generating Private-Public Key Pair");
     let device_private_key = StaticSecret::random_from_rng(RoscRng);
@@ -49,6 +43,16 @@ async fn main(_spawner: Spawner) {
 
     encrypt_decrypt::<Sha256>(&device_private_key, &device_public_key, gcode.as_bytes()).await;
     encrypt_decrypt::<RpSha2>(&device_private_key, &device_public_key, gcode.as_bytes()).await;
+}
+
+fn generate_hash<PRF>(msg: &[u8]) -> [u8; 32]
+where
+    PRF: Prf,
+{
+    let mut sha = Sha256::new();
+    Digest::update(&mut sha, msg);
+    let hash = sha.finalize();
+    hash.into()
 }
 
 async fn encrypt_decrypt<PRF>(
@@ -69,29 +73,36 @@ async fn encrypt_decrypt<PRF>(
         .with_password_and_device_key::<PRF, _>(
             &mut writer.as_mut_slice(),
             pwd.as_bytes(),
-            1_000,
+            100_000,
             device_public_key.as_bytes(),
         )
         .await
         .unwrap();
     info!("[FINISH] Encrypting ({}ms)", start.elapsed().as_millis());
-    info!("{} Bytes Written", written);
-    info!("{}", writer[..written]);
+    info!("({}) Bytes {}", written, writer[..written]);
 
     info!("[START] Decrypting");
     let start = Instant::now();
     let device_private_key: [u8; 32] = device_private_key.to_bytes();
     let d = DecryptBuilder::new(&writer[..written]);
-    info!("[FINISH] Decrypting ({}us)", start.elapsed().as_micros());
     let mut line_decryptor = d
         .with_password_and_device_key::<PRF>(pwd.as_bytes(), device_private_key)
         .await
         .unwrap();
+    info!(
+        "[FINISH] Valid Decryptor ({}ms)",
+        start.elapsed().as_millis()
+    );
     let mut line = [0u8; 1024];
     loop {
+        let start = Instant::now();
         match line_decryptor.read_line(&mut line.as_mut_slice()) {
             Ok(Some(n)) => {
-                info!("GCODE LINE: {}", line[..n]);
+                info!(
+                    "[GCODE] ({})us : {}",
+                    start.elapsed().as_micros(),
+                    line[..n]
+                );
             }
             Ok(None) => {
                 warn!("EOF");
