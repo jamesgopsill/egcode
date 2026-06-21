@@ -14,6 +14,7 @@ where
 {
     reader: &'a mut R,
     writer: &'a mut W,
+    written: usize,
     secret: &'a [u8],
     nonce: &'a [u8],
     cipher: ChaCha20Poly1305,
@@ -36,13 +37,14 @@ where
         Ok(Self {
             reader,
             writer,
+            written: 0,
             secret,
             nonce,
             cipher,
         })
     }
 
-    pub async fn encrypt(self) -> Result<(), Error<W::Error>> {
+    pub async fn encrypt(self) -> Result<usize, Error<W::Error>> {
         self.await
     }
 }
@@ -52,7 +54,7 @@ where
     R: Read,
     W: Write + ErrorType,
 {
-    type Output = Result<(), Error<W::Error>>;
+    type Output = Result<usize, Error<W::Error>>;
 
     fn poll(
         mut self: core::pin::Pin<&mut Self>,
@@ -66,7 +68,7 @@ where
         };
 
         if n == 0 {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Ok(self.written));
         }
 
         let Ok(tag) = self
@@ -75,8 +77,8 @@ where
         else {
             return Poll::Ready(Err(Error::BlockError));
         };
-        self.writer.write_all(&tag)?;
-        self.writer.write_all(&block[..n])?;
+        self.written += self.writer.write(&tag)?;
+        self.written += self.writer.write(&block[..n])?;
 
         cx.waker().wake_by_ref();
         Poll::Pending

@@ -42,6 +42,7 @@ use futures::executor::block_on;
 use rand_core::OsRng;
 use egcode::encrypt::Encrypt;
 use egcode::decrypt::DecryptBuilder;
+use sha2::Sha256;
 
 let file = std::fs::File::open("test_data/box.gcode").unwrap();
 let reader = std::io::BufReader::new(file);
@@ -50,12 +51,12 @@ let pwd = "shhh";
 let mut writer = std::vec::Vec::new();
 let e = Encrypt::new(reader, OsRng);
 
-block_on(e.with_password(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
+block_on(e.with_password::<Sha256, _>(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
 println!("Encrypted Gcode Length: {:?}", writer.len());
 
 let reader = FromStd::new(writer.as_slice());
 let d = DecryptBuilder::new(reader);
-let mut line_reader = block_on(d.with_password(pwd.as_bytes())).unwrap();
+let mut line_reader = block_on(d.with_password::<Sha256>(pwd.as_bytes())).unwrap();
 
 let mut line = std::vec::Vec::new();
 

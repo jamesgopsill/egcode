@@ -1,6 +1,6 @@
 use defmt::info;
 use digest::{
-    FixedOutput, FixedOutputReset, HashMarker, OutputSizeUser, Reset, Update,
+    FixedOutput, HashMarker, OutputSizeUser, Reset, Update,
     common::BlockSizeUser,
     consts::{U32, U64},
 };
@@ -44,8 +44,29 @@ impl RpSha2 {
         self.word_buf.fill(0);
         self.word_pos = 0;
     }
+}
 
-    fn output_hash(&mut self, out: &mut digest::Output<Self>) {
+impl Update for RpSha2 {
+    fn update(&mut self, data: &[u8]) {
+        // info!("[HW_SHA] update()");
+        if self.word_pos == 4 {
+            self.write_word(self.word_buf);
+        }
+        for byte in data {
+            self.word_buf[self.word_pos] = *byte;
+            self.word_pos += 1;
+            if self.word_pos == 4 {
+                self.write_word(self.word_buf);
+            }
+        }
+    }
+}
+
+impl FixedOutput for RpSha2 {
+    fn finalize_into(mut self, out: &mut digest::Output<Self>) {
+        // info!("[HW_SHA] finalize_into()");
+
+        // NOTE. There may be a couple of bits in the buffer
         let original_message_bit_length = (self.bits_written + self.word_pos as u32 * 8) as u64;
         /*
         info!(
@@ -112,29 +133,6 @@ impl RpSha2 {
     }
 }
 
-impl Update for RpSha2 {
-    fn update(&mut self, data: &[u8]) {
-        // info!("[HW_SHA] update()");
-        if self.word_pos == 4 {
-            self.write_word(self.word_buf);
-        }
-        for byte in data {
-            self.word_buf[self.word_pos] = *byte;
-            self.word_pos += 1;
-            if self.word_pos == 4 {
-                self.write_word(self.word_buf);
-            }
-        }
-    }
-}
-
-impl FixedOutput for RpSha2 {
-    fn finalize_into(mut self, out: &mut digest::Output<Self>) {
-        // info!("[HW_SHA] finalize_into()");
-        self.output_hash(out);
-    }
-}
-
 impl Reset for RpSha2 {
     fn reset(&mut self) {
         //info!("[HW_SHA] reset()");
@@ -142,11 +140,5 @@ impl Reset for RpSha2 {
             w.set_start(true);
             w.set_bswap(true);
         });
-    }
-}
-
-impl FixedOutputReset for RpSha2 {
-    fn finalize_into_reset(&mut self, out: &mut digest::Output<Self>) {
-        self.output_hash(out);
     }
 }

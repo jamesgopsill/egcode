@@ -7,11 +7,6 @@ description = "Examples using ACS37800 with a Raspberry Pi Pico 2 W."
 repository = "https://github.com/jamesgopsill/acs37800"
 readme = "README.md"
 
-[profile.release]
-lto = false
-codegen-unit = 1
-debug = 2
-
 [dependencies]
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
@@ -34,6 +29,13 @@ embassy-time = {
   version = "0.5",
   features = ["defmt"]
 }
+# SD Card deps
+embedded-sdmmc = "0.9"
+embedded-hal = "1"
+embassy-sync = "0.8"
+embassy-embedded-hal = "0.6"
+static_cell = "2"
+# egcode deps
 egcode = { path = "../../egcode" }
 x25519-dalek = {
   version = "2",

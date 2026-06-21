@@ -2,14 +2,16 @@
 #![no_main]
 
 use defmt::{error, info, warn};
-use digest::{Digest, common::BlockSizeUser};
+use digest::Digest;
 use egcode::{
     decrypt::{DecryptBuilder, Error},
     encrypt::Encrypt,
+    pbkdf2::Prf,
 };
 use embassy_executor::Spawner;
 use embassy_rp::clocks::RoscRng;
 
+use embassy_time::Instant;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -22,6 +24,7 @@ mod rp_sha2;
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("Welcome to the Pico egcode example");
+    let _ = embassy_rp::init(Default::default());
 
     let gcode = "G1 X0 Y0\n G1 X1 Y0\n";
     info!("Gcode bytes: {}", gcode.as_bytes());
@@ -48,36 +51,40 @@ async fn main(_spawner: Spawner) {
     encrypt_decrypt::<RpSha2>(&device_private_key, &device_public_key, gcode.as_bytes()).await;
 }
 
-async fn encrypt_decrypt<D>(
+async fn encrypt_decrypt<PRF>(
     device_private_key: &StaticSecret,
     device_public_key: &PublicKey,
     gcode: &[u8],
 ) where
-    D: Digest + BlockSizeUser + Clone + Unpin,
+    PRF: Prf,
 {
     let mut writer = [0u8; 1024];
 
-    info!("Encrypting");
+    info!("[Start] Encrypting");
+
     let pwd = "test";
+    let start = Instant::now();
     let e = Encrypt::new(gcode, RoscRng);
     let written = e
-        .with_password_and_device_key::<D, _>(
+        .with_password_and_device_key::<PRF, _>(
             &mut writer.as_mut_slice(),
             pwd.as_bytes(),
-            100,
+            1_000,
             device_public_key.as_bytes(),
         )
         .await
         .unwrap();
-
+    info!("[FINISH] Encrypting ({}ms)", start.elapsed().as_millis());
     info!("{} Bytes Written", written);
     info!("{}", writer[..written]);
 
-    info!("Decrypting");
+    info!("[START] Decrypting");
+    let start = Instant::now();
     let device_private_key: [u8; 32] = device_private_key.to_bytes();
     let d = DecryptBuilder::new(&writer[..written]);
+    info!("[FINISH] Decrypting ({}us)", start.elapsed().as_micros());
     let mut line_decryptor = d
-        .with_password_and_device_key::<D>(pwd.as_bytes(), device_private_key)
+        .with_password_and_device_key::<PRF>(pwd.as_bytes(), device_private_key)
         .await
         .unwrap();
     let mut line = [0u8; 1024];
