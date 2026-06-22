@@ -1,11 +1,6 @@
-use std::{
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
-
-use egcode::decrypt::{DecryptBuilder, DecryptReader, Error};
-use gloo_timers::future::TimeoutFuture;
+use egcode::decrypt::DecryptBuilder;
 use leptos::{prelude::*, reactive::spawn_local};
+use sha2::Sha256;
 use web_sys::{
     Event, HtmlInputElement, MouseEvent,
     js_sys::{self, futures::JsFuture},
@@ -13,34 +8,7 @@ use web_sys::{
 };
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::download::download_gcode;
-
-const MAX_ITER: u32 = 10_000;
-
-async fn poll_fut<T: embedded_io::Read>(
-    fut: impl Future<Output = Result<DecryptReader<T>, Error>>,
-) -> Result<DecryptReader<T>, Error> {
-    let mut pinned_fut = pin!(fut);
-    let waker = Waker::noop();
-    let mut cx = Context::from_waker(waker);
-    let mut iter: u32 = 0;
-    loop {
-        match pinned_fut.as_mut().poll(&mut cx) {
-            Poll::Pending => {
-                iter += 1;
-                // Pause after so many iterations to enable the
-                // UI to stay responsive.
-                if iter >= MAX_ITER {
-                    TimeoutFuture::new(1).await;
-                    iter = 0;
-                }
-            }
-            Poll::Ready(result) => {
-                return result;
-            }
-        }
-    }
-}
+use crate::utils::{download_gcode, poll_fut};
 
 #[component]
 pub fn Decrypt(
@@ -95,15 +63,16 @@ pub fn Decrypt(
             let decryptor = DecryptBuilder::new(enc.as_slice());
             let line_reader = match selected.get().as_str() {
                 "1" => {
-                    let fut = decryptor.with_password(pwd.as_bytes());
+                    let fut = decryptor.with_password::<Sha256>(pwd.as_bytes());
                     poll_fut(fut).await
                 }
                 "2" => {
-                    let fut = decryptor.with_device_key(key.to_bytes());
+                    let fut =
+                        decryptor.with_device_key::<Sha256>(key.to_bytes());
                     poll_fut(fut).await
                 }
                 "3" => {
-                    let fut = decryptor.with_password_and_device_key(
+                    let fut = decryptor.with_password_and_device_key::<Sha256>(
                         pwd.as_bytes(),
                         key.to_bytes(),
                     );

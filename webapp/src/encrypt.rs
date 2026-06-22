@@ -1,44 +1,12 @@
-use std::{
-    convert::Infallible,
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
-
-use egcode::encrypt::{Encrypt, Error};
-use gloo_timers::future::TimeoutFuture;
+use egcode::encrypt::Encrypt;
 use leptos::{prelude::*, reactive::spawn_local};
 use rand_core::OsRng;
+use sha2::Sha256;
 use web_sys::{Event, HtmlInputElement, MouseEvent, js_sys::futures::JsFuture};
 
-use crate::download::download_gcode;
+use crate::utils::{download_gcode, poll_fut};
 
 const ROUNDS: u32 = 600_000;
-const MAX_ITER: u32 = 10_000;
-
-async fn poll_fut(
-    fut: impl Future<Output = Result<(), Error<Infallible>>>,
-) -> Result<(), Error<Infallible>> {
-    let mut pinned_fut = pin!(fut);
-    let waker = Waker::noop();
-    let mut cx = Context::from_waker(waker);
-    let mut iter: u32 = 0;
-    loop {
-        match pinned_fut.as_mut().poll(&mut cx) {
-            Poll::Pending => {
-                iter += 1;
-                // Pause after so many iterations to enable the
-                // UI to stay responsive.
-                if iter >= MAX_ITER {
-                    TimeoutFuture::new(1).await;
-                    iter = 0;
-                }
-            }
-            Poll::Ready(result) => {
-                return result;
-            }
-        }
-    }
-}
 
 #[component]
 pub fn Encrypt() -> impl IntoView {
@@ -90,7 +58,7 @@ pub fn Encrypt() -> impl IntoView {
                         err_msg.set(Some("Passwords do not match."));
                         return;
                     }
-                    let fut = encryptor.with_password(
+                    let fut = encryptor.with_password::<Sha256, _>(
                         &mut writer,
                         password.as_bytes(),
                         ROUNDS,
@@ -106,8 +74,10 @@ pub fn Encrypt() -> impl IntoView {
                         err_msg.set(Some("Machine public key decode error."));
                         return;
                     };
-                    let fut = encryptor
-                        .with_device_key(&mut writer, &machine_public_key);
+                    let fut = encryptor.with_device_key::<Sha256, _>(
+                        &mut writer,
+                        &machine_public_key,
+                    );
                     let _ = poll_fut(fut).await;
                 }
                 "3" => {
@@ -125,12 +95,13 @@ pub fn Encrypt() -> impl IntoView {
                         err_msg.set(Some("Machine public key decode error."));
                         return;
                     };
-                    let fut = encryptor.with_password_and_device_key(
-                        &mut writer,
-                        password.as_bytes(),
-                        ROUNDS,
-                        &machine_public_key,
-                    );
+                    let fut = encryptor
+                        .with_password_and_device_key::<Sha256, _>(
+                            &mut writer,
+                            password.as_bytes(),
+                            ROUNDS,
+                            &machine_public_key,
+                        );
                     let _ = poll_fut(fut).await;
                 }
                 _ => {
@@ -159,25 +130,30 @@ pub fn Encrypt() -> impl IntoView {
         <div class="row justify-content-center">
             <div class="col-sm-10 col-md-8">
                 <div class="card mt-5 mb-5">
-                <Show when=move || suc_msg.get().is_some()>
-                    <div class="alert alert-success mb-3">
-                        <strong>{"[SUCCESS] "}</strong>
-                        {move || suc_msg.get()}
+                    <Show when=move || suc_msg.get().is_some()>
+                        <div class="alert alert-success mb-3">
+                            <strong>{"[SUCCESS] "}</strong>
+                            {move || suc_msg.get()}
+                        </div>
+                    </Show>
+                    <Show when=move || err_msg.get().is_some()>
+                        <div class="alert alert-danger mb-3">
+                            <strong>{"[ERROR] "}</strong>
+                            {move || err_msg.get()}
+                        </div>
+                    </Show>
+                    <div class="card-header">
+                        {"Encrypt Gcode (Locally in Browser)"} <p class="text-muted">
+                            <small>
+                                {"Encrypt your gcode so only you and selected devices can decrypt it.
+                                There are three methods available: password, device key and password and device key. The decrypt
+                                page contains an example of a device key that has been generated for your current session. Ask a
+                                friend on another device to share this key with you and you can then encrypt gcode solely for
+                                their device. The egcode crate provides the functionality so that CNC microcontrollers can do this so
+                                you know that your gcode can only ever be used by that machine. Your IP is now protected!"}
+                            </small>
+                        </p>
                     </div>
-                </Show>
-                <Show when=move || err_msg.get().is_some()>
-                    <div class="alert alert-danger mb-3">
-                        <strong>{"[ERROR] "}</strong>
-                        {move || err_msg.get()}
-                    </div>
-                </Show>
-                    <div class="card-header">{"Encrypt Gcode (Locally in Browser)"}
-                    <p class="text-muted"><small>{"Encrypt your gcode so only you and selected devices can decrypt it.
-                        There are three methods available: password, device key and password and device key. The decrypt
-                        page contains an example of a device key that has been generated for your current session. Ask a
-                        friend on another device to share this key with you and you can then encrypt gcode solely for
-                        their device. The egcode crate provides the functionality so that CNC microcontrollers can do this so
-                        you know that your gcode can only ever be used by that machine. Your IP is now protected!"}</small></p></div>
                     <div class="card-body">
                         <div class="form-floating">
                             <select bind:value=selected class="form-control mb-4">
