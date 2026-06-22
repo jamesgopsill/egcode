@@ -1,10 +1,13 @@
 use embedded_io::{ErrorType, Read, Write};
-use hkdf::Hkdf;
+use hkdf::SimpleHkdf;
 use rand_core::{CryptoRng, RngCore};
-use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-use crate::{Method, chacha::ChaChaEncrypt, pbkdf2::AsyncPbkdf2};
+use crate::{
+    Method,
+    chacha::ChaChaEncrypt,
+    pbkdf2::{AsyncPbkdf2, Prf},
+};
 
 /// The types of error that might be encountered when
 /// using `Encrypt`.
@@ -32,7 +35,11 @@ pub struct Encrypt<T: Read, R: RngCore + CryptoRng> {
     rng: R,
 }
 
-impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
+impl<T, R> Encrypt<T, R>
+where
+    T: Read,
+    R: RngCore + CryptoRng,
+{
     /// Create a encrypter which requires a reader over the gcode
     /// and a source of randomness which could come from the
     /// operating system or microcontroller hardware. `Encrypt`
@@ -58,20 +65,21 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
     /// and a specified set out of rounds for the async PBKDF2-HMAC-SHA2 (`AsyncPbkdf2`) implementation
     /// to run to generate a hash that is then used as the key for the `ChaCha20Poly1305`
     /// encryption algorithm. See `AsyncPbkdf2` on recoommendations on the number of rounds.
-    pub async fn with_password<W>(
+    pub async fn with_password<PRF, W>(
         mut self,
         writer: &mut W,
         pwd: &[u8],
         rounds: u32,
-    ) -> Result<(), Error<W::Error>>
+    ) -> Result<usize, Error<W::Error>>
     where
+        PRF: Prf,
         W: Write + ErrorType,
     {
         // Generate a secret from a password
         let mut salt = [0u8; 16];
         self.rng.fill_bytes(&mut salt);
 
-        let Ok(hasher) = AsyncPbkdf2::new(pwd, salt.as_slice(), rounds) else {
+        let Ok(hasher) = AsyncPbkdf2::<PRF>::new(pwd, salt.as_slice(), rounds) else {
             return Err(Error::CipherError);
         };
         let secret = hasher.generate().await;
@@ -79,19 +87,24 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         let mut nonce = [0u8; 12];
         self.rng.fill_bytes(&mut nonce);
 
-        writer.write_all(b"EGCO")?;
-        writer.write_all(&1u16.to_le_bytes())?;
-        writer.write_all(&rounds.to_le_bytes())?;
-        writer.write_all(salt.as_slice())?;
-        writer.write_all(nonce.as_slice())?;
+        let mut written: usize = 0;
+
+        // NOTE. Using write and flush to accommodate SD card block writing
+        // and prevent spin locks on embedded devices.
+        written += writer.write(b"EGCO")?;
+        written += writer.write(&1u16.to_le_bytes())?;
+        written += writer.write(&rounds.to_le_bytes())?;
+        written += writer.write(salt.as_slice())?;
+        written += writer.write(nonce.as_slice())?;
+        writer.flush()?;
         let cc = ChaChaEncrypt::new(
             &mut self.reader,
             writer,
             secret.as_slice(),
             nonce.as_slice(),
         )?;
-        cc.encrypt().await?;
-        Ok(())
+        written += cc.encrypt().await?;
+        Ok(written)
     }
 
     /// End-to-end protects a gcode file against a specific device public-private key pair.
@@ -101,12 +114,13 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
     /// suitable for `ChaCha20Poly1305`. The code is then ecnrypted and the ephemeral public key
     /// is provided in the header. Only a device with the device private key will be able to
     /// decrypt the gcode.
-    pub async fn with_device_key<W>(
+    pub async fn with_device_key<PRF, W>(
         mut self,
         writer: &mut W,
         device_public_key: &[u8],
-    ) -> Result<(), Error<W::Error>>
+    ) -> Result<usize, Error<W::Error>>
     where
+        PRF: Prf,
         W: Write + ErrorType,
     {
         let Ok(bob): Result<[u8; 32], _> = device_public_key.try_into() else {
@@ -123,7 +137,7 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         // secret based on it using HKDF
         let mut salt = [0u8; 16];
         self.rng.fill_bytes(&mut salt);
-        let hk = Hkdf::<Sha256>::new(Some(&salt), shared_secret.as_bytes());
+        let hk = SimpleHkdf::<PRF>::new(Some(&salt), shared_secret.as_bytes());
 
         let mut okm = [0u8; 32];
         if hk.expand(b"egcode", &mut okm).is_err() {
@@ -133,15 +147,19 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         let mut nonce = [0u8; 12];
         self.rng.fill_bytes(&mut nonce);
 
-        writer.write_all(b"EGCO")?;
-        writer.write_all(&Method::WithDeviceKey.as_bytes())?;
-        writer.write_all(&salt)?;
-        writer.write_all(&nonce)?;
-        writer.write_all(ephemeral_public_key.as_bytes())?;
+        // NOTE. Using write and flush to accommodate SD card block writing
+        // and prevent spin locks on embedded devices.
+        let mut written: usize = 0;
+        written += writer.write(b"EGCO")?;
+        written += writer.write(&Method::WithDeviceKey.as_bytes())?;
+        written += writer.write(&salt)?;
+        written += writer.write(&nonce)?;
+        written += writer.write(ephemeral_public_key.as_bytes())?;
+        writer.flush()?;
         let cc = ChaChaEncrypt::new(&mut self.reader, writer, okm.as_slice(), nonce.as_slice())?;
-        cc.encrypt().await?;
+        written += cc.encrypt().await?;
 
-        Ok(())
+        Ok(written)
     }
 
     /// Combines `with_password` and `with_device_key`. The HKDF derive secret from the shared secret
@@ -151,14 +169,15 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
     /// with the device key to decrypt the gcode thereby providing the need for the gcode to be placed
     /// on the right device and authorised in the presence of a trusted individual who knows the password
     /// to that code.
-    pub async fn with_password_and_device_key<W>(
+    pub async fn with_password_and_device_key<PRF, W>(
         mut self,
         writer: &mut W,
         pwd: &[u8],
         rounds: u32,
         device_public_key: &[u8],
-    ) -> Result<(), Error<W::Error>>
+    ) -> Result<usize, Error<W::Error>>
     where
+        PRF: Prf,
         W: Write + ErrorType,
     {
         let Ok(bob): Result<[u8; 32], _> = device_public_key.try_into() else {
@@ -173,7 +192,7 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
 
         let mut gcode_salt = [0u8; 16];
         self.rng.fill_bytes(&mut gcode_salt);
-        let hk = Hkdf::<Sha256>::new(Some(&gcode_salt), shared_secret.as_bytes());
+        let hk = SimpleHkdf::<PRF>::new(Some(&gcode_salt), shared_secret.as_bytes());
 
         let mut gcode_secret = [0u8; 32];
         if hk.expand(b"egcode", &mut gcode_secret).is_err() {
@@ -189,18 +208,20 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
         let mut pwd_nonce = [0u8; 12];
         self.rng.fill_bytes(&mut pwd_nonce);
 
-        let Ok(hasher) = AsyncPbkdf2::new(pwd, pwd_salt.as_slice(), rounds) else {
+        let Ok(hasher) = AsyncPbkdf2::<PRF>::new(pwd, pwd_salt.as_slice(), rounds) else {
             return Err(Error::CipherError);
         };
         let pwd_secret = hasher.generate().await;
 
-        writer.write_all(b"EGCO")?;
-        writer.write_all(&Method::WithPasswordAndDeviceKey.as_bytes())?;
-        writer.write_all(&rounds.to_le_bytes())?;
-        writer.write_all(&pwd_salt)?;
-        writer.write_all(&pwd_nonce)?;
-        writer.write_all(&gcode_salt)?;
-        writer.write_all(&gcode_nonce)?;
+        let mut written: usize = 0;
+        written += writer.write(b"EGCO")?;
+        written += writer.write(&Method::WithPasswordAndDeviceKey.as_bytes())?;
+        written += writer.write(&rounds.to_le_bytes())?;
+        written += writer.write(&pwd_salt)?;
+        written += writer.write(&pwd_nonce)?;
+        written += writer.write(&gcode_salt)?;
+        written += writer.write(&gcode_nonce)?;
+        writer.flush()?;
 
         let mut key_slice = ephemeral_public_key.as_bytes().as_slice();
         let cc = ChaChaEncrypt::new(
@@ -209,16 +230,16 @@ impl<T: Read, R: RngCore + CryptoRng> Encrypt<T, R> {
             pwd_secret.as_slice(),
             pwd_nonce.as_slice(),
         )?;
-        cc.encrypt().await?;
+        written += cc.encrypt().await?;
         let cc = ChaChaEncrypt::new(
             &mut self.reader,
             writer,
             gcode_secret.as_slice(),
             gcode_nonce.as_slice(),
         )?;
-        cc.encrypt().await?;
+        written += cc.encrypt().await?;
 
-        Ok(())
+        Ok(written)
     }
 }
 
@@ -227,6 +248,7 @@ mod tests {
     use embedded_io_adapters::std::FromStd;
     use futures::executor::block_on;
     use rand_core::OsRng;
+    use sha2::Sha256;
 
     use super::*;
 
@@ -240,7 +262,7 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        let r = block_on(e.with_password(&mut writer, pwd.as_bytes(), 10_000));
+        let r = block_on(e.with_password::<Sha256, _>(&mut writer, pwd.as_bytes(), 10_000));
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
         assert!(r.is_ok())
     }
@@ -254,7 +276,7 @@ mod tests {
         let mut device_key = [0u8; 32];
         OsRng.fill_bytes(&mut device_key);
         let e = Encrypt::new(reader, OsRng);
-        let r = block_on(e.with_device_key(&mut writer, device_key.as_slice()));
+        let r = block_on(e.with_device_key::<Sha256, _>(&mut writer, device_key.as_slice()));
         assert!(r.is_ok())
     }
 
@@ -268,7 +290,7 @@ mod tests {
         OsRng.fill_bytes(&mut device_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        let r = block_on(e.with_password_and_device_key(
+        let r = block_on(e.with_password_and_device_key::<Sha256, _>(
             &mut writer,
             pwd.as_bytes(),
             10_000,

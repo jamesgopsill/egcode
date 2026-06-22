@@ -1,12 +1,12 @@
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce, Tag};
 use embedded_io::{Read, Write};
-use hkdf::Hkdf;
-use sha2::Sha256;
+use hkdf::SimpleHkdf;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::{BLOCK_SIZE, Method, TAG_SIZE, pbkdf2::AsyncPbkdf2};
-
-extern crate std;
+use crate::{
+    BLOCK_SIZE, Method, TAG_SIZE,
+    pbkdf2::{AsyncPbkdf2, Prf},
+};
 
 /// The possible errors that might arise from decrypting
 /// a gcode file.
@@ -36,7 +36,10 @@ impl<R: Read> DecryptBuilder<R> {
     }
 
     /// Provides a `DecryptedReader` if the password is valid for the file.
-    pub async fn with_password(mut self, pwd: &[u8]) -> Result<DecryptReader<R>, Error> {
+    pub async fn with_password<PRF>(mut self, pwd: &[u8]) -> Result<DecryptReader<R>, Error>
+    where
+        PRF: Prf,
+    {
         self.read_magic()?;
         let Ok(method) = Method::try_from_reader(&mut self.reader) else {
             return Err(Error::InvalidMethod);
@@ -48,7 +51,7 @@ impl<R: Read> DecryptBuilder<R> {
         let salt = self.read_salt()?;
         let nonce = self.read_nonce()?;
 
-        let Ok(hasher) = AsyncPbkdf2::new(pwd, salt.as_slice(), rounds) else {
+        let Ok(hasher) = AsyncPbkdf2::<PRF>::new(pwd, salt.as_slice(), rounds) else {
             return Err(Error::CipherError);
         };
         let secret = hasher.generate().await;
@@ -62,10 +65,13 @@ impl<R: Read> DecryptBuilder<R> {
     }
 
     /// Provides a `DecryptReader` if the device private key is valid for the file.
-    pub async fn with_device_key(
+    pub async fn with_device_key<PRF>(
         mut self,
         device_private_key: [u8; 32],
-    ) -> Result<DecryptReader<R>, Error> {
+    ) -> Result<DecryptReader<R>, Error>
+    where
+        PRF: Prf,
+    {
         self.read_magic()?;
         let Ok(method) = Method::try_from_reader(&mut self.reader) else {
             return Err(Error::InvalidMethod);
@@ -85,7 +91,7 @@ impl<R: Read> DecryptBuilder<R> {
         let device_private_key = StaticSecret::from(device_private_key);
         let shared_secret = device_private_key.diffie_hellman(&ephemeral_public_key);
 
-        let hk = Hkdf::<Sha256>::new(Some(&salt), shared_secret.as_bytes());
+        let hk = SimpleHkdf::<PRF>::new(Some(&salt), shared_secret.as_bytes());
         let mut gcode_secret = [0u8; 32];
         if hk.expand(b"egcode", &mut gcode_secret).is_err() {
             return Err(Error::KeyError);
@@ -100,11 +106,14 @@ impl<R: Read> DecryptBuilder<R> {
     }
 
     /// Provides a `DecryptReader` if the password and device private key is valid for the file.
-    pub async fn with_password_and_device_key(
+    pub async fn with_password_and_device_key<PRF>(
         mut self,
         pwd: &[u8],
         device_private_key: [u8; 32],
-    ) -> Result<DecryptReader<R>, Error> {
+    ) -> Result<DecryptReader<R>, Error>
+    where
+        PRF: Prf,
+    {
         self.read_magic()?;
         let Ok(method) = Method::try_from_reader(&mut self.reader) else {
             return Err(Error::InvalidMethod);
@@ -122,7 +131,7 @@ impl<R: Read> DecryptBuilder<R> {
         // Create the cipher from the password to
         // decode the ephemeral_public_key
 
-        let Ok(hasher) = AsyncPbkdf2::new(pwd, pwd_salt.as_slice(), rounds) else {
+        let Ok(hasher) = AsyncPbkdf2::<PRF>::new(pwd, pwd_salt.as_slice(), rounds) else {
             return Err(Error::CipherError);
         };
         let pwd_secret = hasher.generate().await;
@@ -142,7 +151,7 @@ impl<R: Read> DecryptBuilder<R> {
 
         cipher
             .decrypt_in_place_detached(&pwd_nonce, &[], &mut ephemeral_public_key, &tag.into())
-            .map_err(|_| Error::DecryptError)?;
+            .map_err(|_e| Error::DecryptError)?;
 
         let ephemeral_public_key = PublicKey::from(ephemeral_public_key);
 
@@ -152,7 +161,7 @@ impl<R: Read> DecryptBuilder<R> {
         let device_private_key = StaticSecret::from(device_private_key);
         let shared_secret = device_private_key.diffie_hellman(&ephemeral_public_key);
 
-        let hk = Hkdf::<Sha256>::new(Some(&gcode_salt), shared_secret.as_bytes());
+        let hk = SimpleHkdf::<PRF>::new(Some(&gcode_salt), shared_secret.as_bytes());
         let mut gcode_secret = [0u8; 32];
         if hk.expand(b"egcode", &mut gcode_secret).is_err() {
             return Err(Error::KeyError);
@@ -255,7 +264,7 @@ impl<R: Read> DecryptReader<R> {
             let n = self.reader.read(&mut block).map_err(|_| Error::ReadError)?;
             self.cipher
                 .decrypt_in_place_detached(&self.nonce, &[], &mut block[..n], tag)
-                .map_err(|_| Error::DecryptError)?;
+                .map_err(|_e| Error::DecryptError)?;
             // Find the first null byte
             let Some(idx) = self.buffer.iter().position(|&b| b == 0) else {
                 return Err(Error::DecryptError);
@@ -285,6 +294,7 @@ mod tests {
     use embedded_io_adapters::std::FromStd;
     use futures::executor::block_on;
     use rand_core::OsRng;
+    use sha2::Sha256;
 
     use crate::encrypt::Encrypt;
 
@@ -300,12 +310,12 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        block_on(e.with_password(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
+        block_on(e.with_password::<Sha256, _>(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
         let reader = FromStd::new(writer.as_slice());
         let d = DecryptBuilder::new(reader);
-        let mut line_decryptor = block_on(d.with_password(pwd.as_bytes())).unwrap();
+        let mut line_decryptor = block_on(d.with_password::<Sha256>(pwd.as_bytes())).unwrap();
 
         let mut line = std::vec::Vec::new();
 
@@ -337,13 +347,14 @@ mod tests {
         let e = Encrypt::new(reader, OsRng);
         let device_private_key = StaticSecret::random_from_rng(OsRng);
         let device_public_key = PublicKey::from(&device_private_key);
-        block_on(e.with_device_key(&mut writer, device_public_key.as_bytes())).unwrap();
+        block_on(e.with_device_key::<Sha256, _>(&mut writer, device_public_key.as_bytes()))
+            .unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
         let reader = FromStd::new(writer.as_slice());
         let bytes: [u8; 32] = device_private_key.to_bytes();
         let d = DecryptBuilder::new(reader);
-        let mut line_decryptor = block_on(d.with_device_key(bytes)).unwrap();
+        let mut line_decryptor = block_on(d.with_device_key::<Sha256>(bytes)).unwrap();
 
         let mut line = std::vec::Vec::new();
 
@@ -376,10 +387,10 @@ mod tests {
         let device_public_key = PublicKey::from(&device_private_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        block_on(e.with_password_and_device_key(
+        block_on(e.with_password_and_device_key::<Sha256, _>(
             &mut writer,
             pwd.as_bytes(),
-            10_000,
+            100,
             device_public_key.as_bytes(),
         ))
         .unwrap();
@@ -388,7 +399,8 @@ mod tests {
         let device_private_key: [u8; 32] = device_private_key.to_bytes();
         let d = DecryptBuilder::new(reader);
         let mut line_decryptor =
-            block_on(d.with_password_and_device_key(pwd.as_bytes(), device_private_key)).unwrap();
+            block_on(d.with_password_and_device_key::<Sha256>(pwd.as_bytes(), device_private_key))
+                .unwrap();
 
         let mut line = std::vec::Vec::new();
         loop {
@@ -405,6 +417,55 @@ mod tests {
                 Err(e) => {
                     std::println!("Error {e:?}");
                     panic!("Errored");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_pico_example() {
+        let gcode = "G1 X0 Y0\n G1 X1 Y0\n";
+
+        std::println!("Generating Private-Public Key Pair");
+        let device_private_key = StaticSecret::random_from_rng(OsRng);
+        let device_public_key = PublicKey::from(&device_private_key);
+
+        let mut writer = [0u8; 512];
+
+        std::println!("Encrypting");
+        let pwd = "test";
+        let e = Encrypt::new(gcode.as_bytes(), OsRng);
+        let written = block_on(e.with_password_and_device_key::<Sha256, _>(
+            &mut writer.as_mut_slice(),
+            pwd.as_bytes(),
+            100,
+            device_public_key.as_bytes(),
+        ))
+        .unwrap();
+
+        std::println!("{} Bytes Written", written);
+        std::println!("{:?}", &writer[..written]);
+        std::println!("{:?}", &writer);
+
+        std::println!("Decrypting");
+        let device_private_key: [u8; 32] = device_private_key.to_bytes();
+        let d = DecryptBuilder::new(&writer[..written]);
+        let mut line_decryptor =
+            block_on(d.with_password_and_device_key::<Sha256>(pwd.as_bytes(), device_private_key))
+                .unwrap();
+        let mut line = [0u8; 2056];
+        loop {
+            match line_decryptor.read_line(&mut line.as_mut_slice()) {
+                Ok(Some(_n)) => {
+                    std::println!("Gcode Line: {:?}", line);
+                }
+                Ok(None) => {
+                    std::println!("EOF");
+                    break;
+                }
+                Err(e) => {
+                    std::println!("{:?}", e);
+                    panic!("Whooops");
                 }
             }
         }

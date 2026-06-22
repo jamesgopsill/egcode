@@ -1,7 +1,40 @@
+use std::{
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
+
+use gloo_timers::future::TimeoutFuture;
 use web_sys::{
     HtmlAnchorElement, js_sys,
     wasm_bindgen::{JsCast, JsValue},
 };
+
+const MAX_ITER: u32 = 10_000;
+
+pub async fn poll_fut<T, E>(
+    fut: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let mut pinned_fut = pin!(fut);
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    let mut iter: u32 = 0;
+    loop {
+        match pinned_fut.as_mut().poll(&mut cx) {
+            Poll::Pending => {
+                iter += 1;
+                // Pause after so many iterations to enable the
+                // UI to stay responsive.
+                if iter >= MAX_ITER {
+                    TimeoutFuture::new(1).await;
+                    iter = 0;
+                }
+            }
+            Poll::Ready(result) => {
+                return result;
+            }
+        }
+    }
+}
 
 pub fn download_gcode(
     data: Vec<u8>,

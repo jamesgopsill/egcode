@@ -35,3 +35,6 @@ getrandom = { version = "0.2", features = ["js"] }
 embedded-io-adapters = { version = "0.7", features = ["std"] }
 embedded-io = "0.7"
 egcode = { path = "../egcode" }
+sha2 = "0.11"
+
+

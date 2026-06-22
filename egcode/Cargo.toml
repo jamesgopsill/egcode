@@ -30,15 +30,11 @@ chacha20poly1305 = {
 }
 rand_core = "0.6"
 hkdf = {
-  version = "0.12",
-  default-features = false
-}
-sha2 = {
-  version = "0.10",
+  version = "0.13",
   default-features = false
 }
 hmac = {
-  version = "0.12",
+  version = "0.13",
   default-features = false
 }
 embedded-io = "0.7"
@@ -46,8 +42,27 @@ futures = {
   version = "0.3",
   default-features = false
 }
+digest = {
+  version = "0.11",
+  features = ["block-api"]
+}
 
+# These are ok to be `std` as we
+# test in `std` environments.
 [dev-dependencies]
-rand_core = { version = "0.6", features = ["getrandom"] }
-embedded-io-adapters = { version = "0.7", features = ["std"] }
+rand_core = {
+  version = "0.6",
+  features = ["getrandom"]
+}
+embedded-io-adapters = {
+  version = "0.7",
+  features = ["std"]
+}
 futures = "0.3"
+sha2 = {
+  version = "0.11",
+}
+x25519-dalek = {
+  version = "2",
+  features = ["static_secrets"]
+}

@@ -7,10 +7,10 @@ use rand_core::OsRng;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 mod decrypt;
-mod download;
 mod encrypt;
 mod index;
 mod navbar;
+mod utils;
 
 use decrypt::Decrypt;
 use encrypt::Encrypt;
