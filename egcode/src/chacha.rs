@@ -79,6 +79,7 @@ where
         };
         self.written += self.writer.write(&tag)?;
         self.written += self.writer.write(&block[..n])?;
+        self.writer.flush()?;
 
         cx.waker().wake_by_ref();
         Poll::Pending

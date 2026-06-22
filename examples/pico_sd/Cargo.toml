@@ -30,7 +30,11 @@ embassy-time = {
   features = ["defmt"]
 }
 # SD Card deps
-embedded-sdmmc = "0.9"
+embedded-sdmmc = {
+  version = "0.9",
+  # default-features = false,
+  # features = ["defmt-log"]
+}
 embedded-hal = "1"
 embassy-sync = "0.8"
 embassy-embedded-hal = "0.6"
@@ -51,4 +55,5 @@ digest = {
   default-features = false,
   features = ["block-api"]
 }
+# Need to an an Adaptor between
 embedded-io = "0.7"

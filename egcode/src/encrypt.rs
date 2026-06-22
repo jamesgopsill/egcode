@@ -89,18 +89,21 @@ where
 
         let mut written: usize = 0;
 
+        // NOTE. Using write and flush to accommodate SD card block writing
+        // and prevent spin locks on embedded devices.
         written += writer.write(b"EGCO")?;
         written += writer.write(&1u16.to_le_bytes())?;
         written += writer.write(&rounds.to_le_bytes())?;
         written += writer.write(salt.as_slice())?;
         written += writer.write(nonce.as_slice())?;
+        writer.flush()?;
         let cc = ChaChaEncrypt::new(
             &mut self.reader,
             writer,
             secret.as_slice(),
             nonce.as_slice(),
         )?;
-        cc.encrypt().await?;
+        written += cc.encrypt().await?;
         Ok(written)
     }
 
@@ -115,7 +118,7 @@ where
         mut self,
         writer: &mut W,
         device_public_key: &[u8],
-    ) -> Result<(), Error<W::Error>>
+    ) -> Result<usize, Error<W::Error>>
     where
         PRF: Prf,
         W: Write + ErrorType,
@@ -144,15 +147,19 @@ where
         let mut nonce = [0u8; 12];
         self.rng.fill_bytes(&mut nonce);
 
-        writer.write_all(b"EGCO")?;
-        writer.write_all(&Method::WithDeviceKey.as_bytes())?;
-        writer.write_all(&salt)?;
-        writer.write_all(&nonce)?;
-        writer.write_all(ephemeral_public_key.as_bytes())?;
+        // NOTE. Using write and flush to accommodate SD card block writing
+        // and prevent spin locks on embedded devices.
+        let mut written: usize = 0;
+        written += writer.write(b"EGCO")?;
+        written += writer.write(&Method::WithDeviceKey.as_bytes())?;
+        written += writer.write(&salt)?;
+        written += writer.write(&nonce)?;
+        written += writer.write(ephemeral_public_key.as_bytes())?;
+        writer.flush()?;
         let cc = ChaChaEncrypt::new(&mut self.reader, writer, okm.as_slice(), nonce.as_slice())?;
-        cc.encrypt().await?;
+        written += cc.encrypt().await?;
 
-        Ok(())
+        Ok(written)
     }
 
     /// Combines `with_password` and `with_device_key`. The HKDF derive secret from the shared secret
@@ -214,6 +221,7 @@ where
         written += writer.write(&pwd_nonce)?;
         written += writer.write(&gcode_salt)?;
         written += writer.write(&gcode_nonce)?;
+        writer.flush()?;
 
         let mut key_slice = ephemeral_public_key.as_bytes().as_slice();
         let cc = ChaChaEncrypt::new(
