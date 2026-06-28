@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "egcode"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
  "digest 0.11.3",
@@ -1236,6 +1236,8 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-io 0.7.1",
  "embedded-sdmmc",
+ "hkdf",
+ "hmac",
  "panic-probe",
  "sha2",
  "static_cell",

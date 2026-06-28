@@ -1,6 +1,5 @@
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce, Tag};
 use embedded_io::{Read, Write};
-use hkdf::SimpleHkdf;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::{
@@ -91,11 +90,14 @@ impl<R: Read> DecryptBuilder<R> {
         let device_private_key = StaticSecret::from(device_private_key);
         let shared_secret = device_private_key.diffie_hellman(&ephemeral_public_key);
 
-        let hk = SimpleHkdf::<PRF>::new(Some(&salt), shared_secret.as_bytes());
+        /*
+        let hk = GenericHkdf::<PRF>::new(Some(&salt), shared_secret.as_bytes());
         let mut gcode_secret = [0u8; 32];
         if hk.expand(b"egcode", &mut gcode_secret).is_err() {
             return Err(Error::KeyError);
         }
+        */
+        let gcode_secret = crate::hkdf::hkdf::<PRF>(&salt, shared_secret.as_bytes(), b"egcode");
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(&gcode_secret) else {
             return Err(Error::CipherError);
@@ -161,11 +163,15 @@ impl<R: Read> DecryptBuilder<R> {
         let device_private_key = StaticSecret::from(device_private_key);
         let shared_secret = device_private_key.diffie_hellman(&ephemeral_public_key);
 
-        let hk = SimpleHkdf::<PRF>::new(Some(&gcode_salt), shared_secret.as_bytes());
+        let gcode_secret =
+            crate::hkdf::hkdf::<PRF>(&gcode_salt, shared_secret.as_bytes(), b"egcode");
+        /*
+        let hk = GenericHkdf::<PRF>::new(Some(&gcode_salt), shared_secret.as_bytes());
         let mut gcode_secret = [0u8; 32];
         if hk.expand(b"egcode", &mut gcode_secret).is_err() {
             return Err(Error::KeyError);
         }
+        */
 
         let Ok(cipher) = ChaCha20Poly1305::new_from_slice(&gcode_secret) else {
             return Err(Error::CipherError);
@@ -294,7 +300,6 @@ mod tests {
     use embedded_io_adapters::std::FromStd;
     use futures::executor::block_on;
     use rand_core::OsRng;
-    use sha2::Sha256;
 
     use crate::encrypt::Encrypt;
 
@@ -310,12 +315,12 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        block_on(e.with_password::<Sha256, _>(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
+        block_on(e.with_password::<sha2::Sha256, _>(&mut writer, pwd.as_bytes(), 10_000)).unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
         let reader = FromStd::new(writer.as_slice());
         let d = DecryptBuilder::new(reader);
-        let mut line_decryptor = block_on(d.with_password::<Sha256>(pwd.as_bytes())).unwrap();
+        let mut line_decryptor = block_on(d.with_password::<sha2::Sha256>(pwd.as_bytes())).unwrap();
 
         let mut line = std::vec::Vec::new();
 
@@ -347,14 +352,14 @@ mod tests {
         let e = Encrypt::new(reader, OsRng);
         let device_private_key = StaticSecret::random_from_rng(OsRng);
         let device_public_key = PublicKey::from(&device_private_key);
-        block_on(e.with_device_key::<Sha256, _>(&mut writer, device_public_key.as_bytes()))
+        block_on(e.with_device_key::<sha2::Sha256, _>(&mut writer, device_public_key.as_bytes()))
             .unwrap();
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
 
         let reader = FromStd::new(writer.as_slice());
         let bytes: [u8; 32] = device_private_key.to_bytes();
         let d = DecryptBuilder::new(reader);
-        let mut line_decryptor = block_on(d.with_device_key::<Sha256>(bytes)).unwrap();
+        let mut line_decryptor = block_on(d.with_device_key::<sha2::Sha256>(bytes)).unwrap();
 
         let mut line = std::vec::Vec::new();
 
@@ -387,7 +392,7 @@ mod tests {
         let device_public_key = PublicKey::from(&device_private_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        block_on(e.with_password_and_device_key::<Sha256, _>(
+        block_on(e.with_password_and_device_key::<sha2::Sha256, _>(
             &mut writer,
             pwd.as_bytes(),
             100,
@@ -398,9 +403,10 @@ mod tests {
         let reader = FromStd::new(writer.as_slice());
         let device_private_key: [u8; 32] = device_private_key.to_bytes();
         let d = DecryptBuilder::new(reader);
-        let mut line_decryptor =
-            block_on(d.with_password_and_device_key::<Sha256>(pwd.as_bytes(), device_private_key))
-                .unwrap();
+        let mut line_decryptor = block_on(
+            d.with_password_and_device_key::<sha2::Sha256>(pwd.as_bytes(), device_private_key),
+        )
+        .unwrap();
 
         let mut line = std::vec::Vec::new();
         loop {
@@ -435,7 +441,7 @@ mod tests {
         std::println!("Encrypting");
         let pwd = "test";
         let e = Encrypt::new(gcode.as_bytes(), OsRng);
-        let written = block_on(e.with_password_and_device_key::<Sha256, _>(
+        let written = block_on(e.with_password_and_device_key::<sha2::Sha256, _>(
             &mut writer.as_mut_slice(),
             pwd.as_bytes(),
             100,
@@ -450,9 +456,10 @@ mod tests {
         std::println!("Decrypting");
         let device_private_key: [u8; 32] = device_private_key.to_bytes();
         let d = DecryptBuilder::new(&writer[..written]);
-        let mut line_decryptor =
-            block_on(d.with_password_and_device_key::<Sha256>(pwd.as_bytes(), device_private_key))
-                .unwrap();
+        let mut line_decryptor = block_on(
+            d.with_password_and_device_key::<sha2::Sha256>(pwd.as_bytes(), device_private_key),
+        )
+        .unwrap();
         let mut line = [0u8; 2056];
         loop {
             match line_decryptor.read_line(&mut line.as_mut_slice()) {

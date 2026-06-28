@@ -1,5 +1,5 @@
 use embedded_io::{ErrorType, Read, Write};
-use hkdf::SimpleHkdf;
+// use hkdf::GenericHkdf;
 use rand_core::{CryptoRng, RngCore};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
@@ -137,12 +137,15 @@ where
         // secret based on it using HKDF
         let mut salt = [0u8; 16];
         self.rng.fill_bytes(&mut salt);
-        let hk = SimpleHkdf::<PRF>::new(Some(&salt), shared_secret.as_bytes());
+        let okm = crate::hkdf::hkdf::<PRF>(&salt, shared_secret.as_bytes(), b"egcode");
+        /*
+        let hk = GenericHkdf::<PRF>::new(Some(&salt), shared_secret.as_bytes());
 
         let mut okm = [0u8; 32];
         if hk.expand(b"egcode", &mut okm).is_err() {
             return Err(Error::KeyError);
         }
+        */
 
         let mut nonce = [0u8; 12];
         self.rng.fill_bytes(&mut nonce);
@@ -192,12 +195,16 @@ where
 
         let mut gcode_salt = [0u8; 16];
         self.rng.fill_bytes(&mut gcode_salt);
-        let hk = SimpleHkdf::<PRF>::new(Some(&gcode_salt), shared_secret.as_bytes());
+        let gcode_secret =
+            crate::hkdf::hkdf::<PRF>(&gcode_salt, shared_secret.as_bytes(), b"egcode");
+        /*
+        let hk = GenericHkdf::<PRF>::new(Some(&gcode_salt), shared_secret.as_bytes());
 
         let mut gcode_secret = [0u8; 32];
         if hk.expand(b"egcode", &mut gcode_secret).is_err() {
             return Err(Error::KeyError);
         }
+        */
 
         let mut gcode_nonce = [0u8; 12];
         self.rng.fill_bytes(&mut gcode_nonce);
@@ -248,7 +255,6 @@ mod tests {
     use embedded_io_adapters::std::FromStd;
     use futures::executor::block_on;
     use rand_core::OsRng;
-    use sha2::Sha256;
 
     use super::*;
 
@@ -262,7 +268,7 @@ mod tests {
         let pwd = "test";
         let mut writer = std::vec::Vec::new();
         let e = Encrypt::new(reader, OsRng);
-        let r = block_on(e.with_password::<Sha256, _>(&mut writer, pwd.as_bytes(), 10_000));
+        let r = block_on(e.with_password::<sha2::Sha256, _>(&mut writer, pwd.as_bytes(), 10_000));
         std::println!("Encrypted Gcode Length: {:?}", writer.len());
         assert!(r.is_ok())
     }
@@ -276,7 +282,7 @@ mod tests {
         let mut device_key = [0u8; 32];
         OsRng.fill_bytes(&mut device_key);
         let e = Encrypt::new(reader, OsRng);
-        let r = block_on(e.with_device_key::<Sha256, _>(&mut writer, device_key.as_slice()));
+        let r = block_on(e.with_device_key::<sha2::Sha256, _>(&mut writer, device_key.as_slice()));
         assert!(r.is_ok())
     }
 
@@ -290,7 +296,7 @@ mod tests {
         OsRng.fill_bytes(&mut device_key);
         let pwd = "test";
         let e = Encrypt::new(reader, OsRng);
-        let r = block_on(e.with_password_and_device_key::<Sha256, _>(
+        let r = block_on(e.with_password_and_device_key::<sha2::Sha256, _>(
             &mut writer,
             pwd.as_bytes(),
             10_000,

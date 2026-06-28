@@ -1,12 +1,13 @@
-#![allow(unused)]
-
-use core::{fmt::Error, hash::Hasher, iter::zip, marker::PhantomData, task::Poll};
-
-use futures::FutureExt;
-use hmac::{KeyInit as _, Mac as _, SimpleHmacReset};
+use core::{marker::PhantomData, task::Poll};
+use hmac::{KeyInit as _, Mac as _};
 
 /// A PseudoRandomFunction trait alias that lists the combination of trait that a struct
 /// needs to implement.
+pub trait Prf: digest::Digest + digest::common::BlockSizeUser + Unpin {}
+
+impl<T> Prf for T where T: digest::Digest + digest::common::BlockSizeUser + Unpin {}
+
+/*
 pub trait Prf:
     digest::Digest + digest::FixedOutputReset + digest::block_api::BlockSizeUser + Clone + Unpin
 {
@@ -16,24 +17,24 @@ impl<T> Prf for T where
     T: digest::Digest + digest::FixedOutputReset + digest::block_api::BlockSizeUser + Clone + Unpin
 {
 }
+*/
 
 /// An asynchronous implementation of PBKDF2-HMAC-SHA2 for a single block hash. Requires
 /// auditing. PBKDF2 was selected for password hashing as we need to meet the microcontroller
 /// requirements where memory is in short supply so CPU-bound hardening was deemed appropriate.
-pub(crate) struct AsyncPbkdf2<P>
+pub struct AsyncPbkdf2<'a, P>
 where
     P: Prf,
 {
-    //password: &'a [u8],
-    //salt: &'a [u8],
+    password: &'a [u8],
     rounds: u32,
     round: u32,
     hash: [u8; 32],
     accumulator: [u8; 32],
-    hmac: SimpleHmacReset<P>,
+    hmac: PhantomData<P>,
 }
 
-impl<P> AsyncPbkdf2<P>
+impl<'a, P> AsyncPbkdf2<'a, P>
 where
     P: Prf,
 {
@@ -46,24 +47,21 @@ where
     /// The time to compute the hash is also not as much of a concern as CNC manufacturing
     /// typically takes hours so a minute or so file check would not have a major impact on
     /// operations.
-    pub fn new(password: &[u8], salt: &[u8], rounds: u32) -> Result<Self, ()> {
-        // HMAC U_1
-        let Ok(mut hmac) = SimpleHmacReset::<P>::new_from_slice(password) else {
+    pub fn new(password: &'a [u8], salt: &[u8], rounds: u32) -> Result<Self, ()> {
+        let Ok(mut hmac) = crate::hmac::Hmac::<P>::new_from_slice(password) else {
             return Err(());
         };
         hmac.update(salt);
-        // block number
         hmac.update(&1u32.to_be_bytes());
-        let hash = hmac.finalize_reset().into_bytes();
-
+        let hash: [u8; 32] = hmac.finalize().into_bytes().as_slice().try_into().unwrap();
         Ok(Self {
-            // password,
+            password,
             // salt,
             rounds,
             round: 1,
-            hash: hash.as_slice().try_into().unwrap(),
-            accumulator: hash.as_slice().try_into().unwrap(),
-            hmac,
+            hash,
+            accumulator: hash,
+            hmac: PhantomData,
         })
     }
 
@@ -75,9 +73,9 @@ where
 }
 
 /// Explicitly declare unpin to help the checker
-impl<P> Unpin for AsyncPbkdf2<P> where P: Prf {}
+impl<'a, P> Unpin for AsyncPbkdf2<'a, P> where P: Prf {}
 
-impl<P> Future for AsyncPbkdf2<P>
+impl<'a, P> Future for AsyncPbkdf2<'a, P>
 where
     P: Prf,
 {
@@ -86,7 +84,7 @@ where
     /// Performs a round on every poll until the specified number
     /// of rounds is completed.
     fn poll(
-        mut self: core::pin::Pin<&mut Self>,
+        self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Self::Output> {
         // Because we can safely unpin
@@ -95,9 +93,12 @@ where
             Poll::Ready(core::mem::take(&mut this.accumulator))
         } else {
             this.round += 1;
-            this.hmac.update(this.hash.as_slice());
-            let hash = this.hmac.finalize_reset().into_bytes();
-            this.hash.copy_from_slice(&hash);
+            // TODO: Propogate the error.
+            // NOTE: Re-initialising the hmac as we cannot clone it
+            // when dealing with hardware sha implementations.
+            let mut hmac = crate::hmac::Hmac::<P>::new_from_slice(this.password).unwrap();
+            hmac.update(&this.hash);
+            this.hash = hmac.finalize().into_bytes().as_slice().try_into().unwrap();
             for i in 0..32 {
                 this.accumulator[i] ^= this.hash[i];
             }
@@ -113,7 +114,6 @@ mod tests {
 
     use futures::executor::block_on;
     use rand_core::{OsRng, RngCore};
-    use sha2::Sha256;
 
     use super::*;
 
@@ -123,7 +123,7 @@ mod tests {
         OsRng.fill_bytes(&mut salt);
         let password = b"password";
         let hasher =
-            AsyncPbkdf2::<Sha256>::new(password.as_slice(), salt.as_slice(), 1_000).unwrap();
+            AsyncPbkdf2::<sha2::Sha256>::new(password.as_slice(), salt.as_slice(), 1_000).unwrap();
         let hash = block_on(hasher.generate());
         std::println!("{:?}", hash);
     }

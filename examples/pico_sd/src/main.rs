@@ -4,9 +4,11 @@
 use core::cell::RefCell;
 
 use defmt::{error, info, warn};
+use digest::Digest as _;
 use egcode::{
     decrypt::{DecryptBuilder, Error},
     encrypt::Encrypt,
+    pbkdf2::AsyncPbkdf2,
 };
 use embassy_embedded_hal::shared_bus::blocking::spi::SpiDevice;
 use embassy_executor::Spawner;
@@ -20,14 +22,16 @@ use embassy_sync::{blocking_mutex::Mutex, blocking_mutex::raw::ThreadModeRawMute
 use embassy_time::{Delay, Instant};
 use embedded_io::{Read as _, Seek as _, SeekFrom, Write as _};
 use embedded_sdmmc::{BlockDevice, File, TimeSource, Timestamp};
+use hmac::{KeyInit as _, Mac as _, SimpleHmac};
 use static_cell::StaticCell;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::rp_sha2::RpSha2;
+mod rp;
 
 use {defmt_rtt as _, panic_probe as _};
 
-mod rp_sha2;
+type HwHmac = rp::hmac::Hmac<rp::sha2::Sha2>;
+type SwHmac = hmac::Hmac<sha2::Sha256>;
 
 static SPI_BUS: StaticCell<Mutex<ThreadModeRawMutex, RefCell<Spi<'static, SPI0, Blocking>>>> =
     StaticCell::new();
@@ -35,6 +39,60 @@ static SPI_BUS: StaticCell<Mutex<ThreadModeRawMutex, RefCell<Spi<'static, SPI0, 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("Welcome to the Pico SD card example");
+
+    let mut salt = [0u8; 16];
+    RoscRng.fill_bytes(&mut salt);
+    let pwd = b"test";
+
+    info!("==== SHA256 CHECK ====");
+    let mut hw_hash = rp::sha2::Sha2::new();
+    hw_hash.update(pwd);
+    let hash: [u8; 32] = hw_hash.finalize_reset().into();
+    info!("HW_HASH (1): {}", hash);
+    hw_hash.update(pwd);
+    let hash: [u8; 32] = hw_hash.finalize_reset().into();
+    info!("HW_HASH (2): {}", hash);
+
+    let mut sw_hash = sha2::Sha256::new();
+    sw_hash.update(pwd);
+    let hash: [u8; 32] = sw_hash.finalize_reset().into();
+    info!("SW_HASH (1): {:?}", hash);
+    sw_hash.update(pwd);
+    let hash: [u8; 32] = sw_hash.finalize_reset().into();
+    info!("SW_HASH (2): {}", hash);
+
+    info!("==== HMAC CHECK ====");
+
+    let mut hmac = rp::hmac::Hmac::<rp::sha2::Sha2>::new_from_slice(pwd).unwrap();
+    hmac.update(&salt);
+    hmac.update(&1u32.to_be_bytes());
+    let hash: [u8; 32] = hmac.finalize().into_bytes().as_slice().try_into().unwrap();
+    info!("HW_HMAC_HASH (1): {:?}", hash);
+
+    let mut hmac = SimpleHmac::<rp::sha2::Sha2>::new_from_slice(pwd).unwrap();
+    hmac.update(&salt);
+    hmac.update(&1u32.to_be_bytes());
+    let hash: [u8; 32] = hmac.finalize().into_bytes().as_slice().try_into().unwrap();
+    info!(
+        "Should produce different hash because of hmac impl: {:?}",
+        hash
+    );
+
+    let mut hmac = SimpleHmac::<sha2::Sha256>::new_from_slice(pwd).unwrap();
+    hmac.update(&salt);
+    hmac.update(&1u32.to_be_bytes());
+    let hash: [u8; 32] = hmac.finalize().into_bytes().as_slice().try_into().unwrap();
+    info!("SW_HMAC_HASH (1): {:?}", hash);
+
+    info!("===== PBKDF2 =====");
+
+    let hasher = AsyncPbkdf2::<HwHmac>::new(pwd, &salt, 100).unwrap();
+    let hash = hasher.generate().await;
+    info!("RPA_HASH: {}", hash);
+
+    let hasher = AsyncPbkdf2::<SwHmac>::new(pwd, &salt, 100).unwrap();
+    let hash = hasher.generate().await;
+    info!("SHA_HASH: {}", hash);
 
     info!("Generating Private-Public Key Pair");
     let device_private_key = StaticSecret::random_from_rng(RoscRng);
@@ -65,7 +123,7 @@ async fn main(_spawner: Spawner) {
 
             // EXAMPLE: Writing and reading a plaintext file.
             let file = root_dir
-                .open_file_in_dir("test.txt", embedded_sdmmc::Mode::ReadWriteCreateOrTruncate)
+                .open_file_in_dir("01.txt", embedded_sdmmc::Mode::ReadWriteCreateOrTruncate)
                 .unwrap();
             let mut file = EmbeddedV07IoAdapter(file);
             file.write(b"Hello World").unwrap();
@@ -90,13 +148,13 @@ async fn main(_spawner: Spawner) {
 
             // WRITE: Create or Open a file
             let file = root_dir
-                .open_file_in_dir("gcode.egc", embedded_sdmmc::Mode::ReadWriteCreateOrTruncate)
+                .open_file_in_dir("01.egc", embedded_sdmmc::Mode::ReadWriteCreateOrTruncate)
                 .unwrap();
             let mut file = EmbeddedV07IoAdapter(file);
 
             let e = Encrypt::new(gcode.as_bytes(), RoscRng);
             let written = e
-                .with_password_and_device_key::<RpSha2, _>(
+                .with_password_and_device_key::<HwHmac, _>(
                     &mut file,
                     pwd.as_bytes(),
                     100,
@@ -114,7 +172,7 @@ async fn main(_spawner: Spawner) {
             let d = DecryptBuilder::new(&mut file);
             info!("[FINISH] Decrypting ({}ms)", start.elapsed().as_millis());
             let mut line_decryptor = d
-                .with_password_and_device_key::<RpSha2>(pwd.as_bytes(), device_private_key)
+                .with_password_and_device_key::<HwHmac>(pwd.as_bytes(), device_private_key)
                 .await
                 .unwrap();
             let mut line = [0u8; 512];

@@ -9,6 +9,8 @@ pub mod decrypt;
 pub mod encrypt;
 
 pub(crate) mod chacha;
+pub(crate) mod hkdf;
+pub(crate) mod hmac;
 pub mod pbkdf2;
 
 /// The default block size used by the ChaCha20Poly1305 cipher.
