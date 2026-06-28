@@ -30,9 +30,6 @@ mod rp;
 
 use {defmt_rtt as _, panic_probe as _};
 
-type HwHmac = rp::hmac::Hmac<rp::sha2::Sha2>;
-type SwHmac = hmac::Hmac<sha2::Sha256>;
-
 static SPI_BUS: StaticCell<Mutex<ThreadModeRawMutex, RefCell<Spi<'static, SPI0, Blocking>>>> =
     StaticCell::new();
 
@@ -86,11 +83,11 @@ async fn main(_spawner: Spawner) {
 
     info!("===== PBKDF2 =====");
 
-    let hasher = AsyncPbkdf2::<HwHmac>::new(pwd, &salt, 100).unwrap();
+    let hasher = AsyncPbkdf2::<rp::sha2::Sha2>::new(pwd, &salt, 100).unwrap();
     let hash = hasher.generate().await;
     info!("RPA_HASH: {}", hash);
 
-    let hasher = AsyncPbkdf2::<SwHmac>::new(pwd, &salt, 100).unwrap();
+    let hasher = AsyncPbkdf2::<sha2::Sha256>::new(pwd, &salt, 100).unwrap();
     let hash = hasher.generate().await;
     info!("SHA_HASH: {}", hash);
 
@@ -154,7 +151,7 @@ async fn main(_spawner: Spawner) {
 
             let e = Encrypt::new(gcode.as_bytes(), RoscRng);
             let written = e
-                .with_password_and_device_key::<HwHmac, _>(
+                .with_password_and_device_key::<rp::sha2::Sha2, _>(
                     &mut file,
                     pwd.as_bytes(),
                     100,
@@ -172,7 +169,7 @@ async fn main(_spawner: Spawner) {
             let d = DecryptBuilder::new(&mut file);
             info!("[FINISH] Decrypting ({}ms)", start.elapsed().as_millis());
             let mut line_decryptor = d
-                .with_password_and_device_key::<HwHmac>(pwd.as_bytes(), device_private_key)
+                .with_password_and_device_key::<rp::sha2::Sha2>(pwd.as_bytes(), device_private_key)
                 .await
                 .unwrap();
             let mut line = [0u8; 512];

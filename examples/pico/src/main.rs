@@ -15,11 +15,9 @@ use embassy_time::Instant;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::rp_sha2::RpSha2;
-
 use {defmt_rtt as _, panic_probe as _};
 
-mod rp_sha2;
+mod rp;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -29,9 +27,9 @@ async fn main(_spawner: Spawner) {
     let gcode = "G1 X0 Y0\n G1 X1 Y0\n";
     info!("Gcode bytes: {}", gcode.as_bytes());
 
-    let hash = generate_hash::<RpSha2>(gcode.as_bytes());
+    let hash = generate_hash::<rp::sha2::Sha2>(gcode.as_bytes());
     info!("[HW_SHA] ({:?}) {:?}", hash.len(), hash.as_slice());
-    let hash = generate_hash::<RpSha2>(gcode.as_bytes());
+    let hash = generate_hash::<rp::sha2::Sha2>(gcode.as_bytes());
     info!("[HW_SHA] ({:?}) {:?}", hash.len(), hash.as_slice());
 
     let hash = generate_hash::<Sha256>(gcode.as_bytes());
@@ -42,7 +40,8 @@ async fn main(_spawner: Spawner) {
     let device_public_key = PublicKey::from(&device_private_key);
 
     encrypt_decrypt::<Sha256>(&device_private_key, &device_public_key, gcode.as_bytes()).await;
-    encrypt_decrypt::<RpSha2>(&device_private_key, &device_public_key, gcode.as_bytes()).await;
+    encrypt_decrypt::<rp::sha2::Sha2>(&device_private_key, &device_public_key, gcode.as_bytes())
+        .await;
 }
 
 fn generate_hash<PRF>(msg: &[u8]) -> [u8; 32]

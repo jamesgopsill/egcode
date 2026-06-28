@@ -1,5 +1,7 @@
 use hmac::{KeyInit as _, Mac as _};
 
+/// Our implementation of HKDF.
+/// https://en.wikipedia.org/wiki/HKDF
 pub(crate) fn hkdf<D: digest::Digest + digest::common::BlockSizeUser>(
     salt: &[u8],
     ikm: &[u8],
